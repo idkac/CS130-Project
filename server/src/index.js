@@ -362,6 +362,17 @@ app.use((error, _req, res, _next) => {
   });
 });
 
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(
+      `Port ${port} is already in use on ${host}. Stop the existing server or set PORT to another value.`
+    );
+    process.exit(1);
+  }
+
+  throw error;
+});
+
 server.listen(port, host, () => {
   console.log(`Clickmate server listening on http://${host}:${port}`);
 });

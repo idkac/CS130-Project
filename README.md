@@ -78,6 +78,14 @@ Open the frontend at:
 http://127.0.0.1:5173/
 ```
 
+If `npm run dev` reports `EADDRINUSE`, another copy of the dev server is already running on that port. Stop the old process, then rerun `npm run dev`:
+
+```bash
+lsof -tiTCP:4000 -sTCP:LISTEN
+lsof -tiTCP:5173 -sTCP:LISTEN
+kill <pid>
+```
+
 To test a full match locally, register two users in two browser sessions or in one normal window plus one private/incognito window. Both users should click `Join match`; the second join starts the timed clicking phase.
 
 ## Scripts
