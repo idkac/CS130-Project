@@ -359,30 +359,15 @@ function Metric({ label, value }) {
 function PhaseView(props) {
   const { match, me, onJoinMatchmaking } = props;
 
-  if (!match || match.phase === "complete") {
-    return <LobbyOrSummary {...props} />;
-  }
+  if (!match) return <LobbyOrSummary {...props} />;        // ← split the null check
+  if (match.phase === "complete") return <LobbyOrSummary {...props} />;
+  if (match.phase === "waiting") return <WaitingPhase match={match} />;
+  if (match.phase === "clicking") return <ClickingPhase me={me} onAction={props.onAction} />;
+  if (match.phase === "shop") return <ShopPhase {...props} />;    // ← spread all props
+  if (match.phase === "placement") return <PlacementPhase {...props} />;
+  if (match.phase === "chess") return <ChessPhase {...props} />;
 
-  if (match.phase === "waiting") {
-    return <WaitingPhase match={match} />;
-  }
-
-  if (match.phase === "clicking") {
-    return <ClickingPhase me={me} onAction={props.onAction} />;
-  }
-
-  if (match.phase === "shop") {
-    return <ShopPhase match={match} me={me} onAction={props.onAction} />;
-  }
-
-  if (match.phase === "placement") {
-    return <PlacementPhase {...props} />;
-  }
-
-  if (match.phase === "chess") {
-    return <ChessPhase {...props} />;
-  }
-
+  // fallback for any unknown phase
   return (
     <div className="rounded-md border border-black/10 bg-white p-4 shadow-sm">
       <button className="rounded-md bg-accent px-4 py-2 font-semibold text-white" onClick={onJoinMatchmaking}>
@@ -467,21 +452,28 @@ function ClickingPhase({ me, onAction }) {
   );
 }
 
-function ShopPhase({ match, me, onAction }) {
+function ShopPhase({ match, me, opponent, onAction }) {
   const inventory = me?.inventory ?? {};
   const powerups = me?.powerups ?? [];
-
+  if (!match.shop) return null;
   return (
     <div className="rounded-md border border-black/10 bg-white p-4 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold">Shop</h3>
-        <button
-          className="rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:bg-black/25"
-          disabled={me?.ready}
-          onClick={() => onAction("/ready")}
-        >
-          {me?.ready ? "Ready" : "Ready up"}
-        </button>
+        <div className="flex items-center gap-2">
+          {opponent ? (
+            <span className={`text-sm px-2 py-1 rounded-md ${opponent.ready ? "bg-green-100 text-green-800" : "bg-black/5 text-ink/50"}`}>
+              {opponent.username}: {opponent.ready ? "Ready ✓" : "Shopping…"}
+            </span>
+          ) : null}
+          <button
+            className="rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:bg-black/25"
+            disabled={me?.ready}
+            onClick={() => onAction("/ready")}
+          >
+            {me?.ready ? "Ready ✓" : "Ready up"}
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -513,13 +505,16 @@ function StoreList({ title, items, owned, disabled, onBuy }) {
           <div className="flex items-center justify-between gap-3 p-3" key={item.id}>
             <div className="min-w-0">
               <div className="font-semibold">{item.label}</div>
+              {item.description ? (
+                <div className="text-xs text-ink/55 mb-0.5">{item.description}</div>
+              ) : null}
               <div className="text-sm text-ink/60">
-                {item.cost} pawns | owned {owned(item)}
+                {item.cost} pawns | owned {owned(item)}{item.maxQuantity ? ` / ${item.maxQuantity}` : ""}
               </div>
             </div>
             <button
               className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-black/25"
-              disabled={disabled(item)}
+              disabled={disabled(item) || owned(item) >= (item.maxQuantity ?? Infinity)}
               onClick={() => onBuy(item)}
             >
               Buy
@@ -534,6 +529,7 @@ function StoreList({ title, items, owned, disabled, onBuy }) {
 function PlacementPhase({
   match,
   me,
+  opponent,
   selectedPiece,
   onSelectPiece,
   selectedSquare,
@@ -593,22 +589,63 @@ function PlacementPhase({
             </button>
           ))}
         </div>
+        {opponent ? (
+          <div className={`mb-2 text-sm px-2 py-1 rounded-md ${opponent.ready ? "bg-green-100 text-green-800" : "bg-black/5 text-ink/50"}`}>
+            {opponent.username}: {opponent.ready ? "Ready ✓" : "Placing pieces…"}
+          </div>
+        ) : null}
         <button
           className="w-full rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:bg-black/25"
           disabled={!hasKing || me?.ready}
           onClick={() => onAction("/ready")}
         >
-          {me?.ready ? "Ready" : "Ready up"}
+          {me?.ready ? "Ready ✓" : "Ready up"}
         </button>
       </div>
     </div>
   );
 }
 
-function ChessPhase({ match, me, selectedSquare, onSelectSquare, onAction }) {
+function formatClock(ms) {
+  if (ms === null || ms === undefined) return "--:--";
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function useChessClock(player, isActive) {
+  const [clockMs, setClockMs] = useState(() => player?.clockMs ?? null);
+
+  useEffect(() => {
+    setClockMs(player?.clockMs ?? null);
+  }, [player?.clockMs, player?.clockLastUpdatedAt]);
+
+  useEffect(() => {
+    if (!isActive || !player?.clockLastUpdatedAt) return undefined;
+    const serverTs = new Date(player.clockLastUpdatedAt).getTime();
+    const baseMs = player.clockMs ?? 0;
+
+    const tick = () => {
+      const elapsed = Date.now() - serverTs;
+      setClockMs(Math.max(0, baseMs - elapsed));
+    };
+
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [isActive, player?.clockLastUpdatedAt, player?.clockMs]);
+
+  return clockMs;
+}
+
+function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAction }) {
   const pieces = parseFen(match.chess?.fen);
   const turn = currentTurn(match.chess?.fen);
   const isMyTurn = turn === me?.color;
+
+  const myClockMs = useChessClock(me, isMyTurn);
+  const opponentClockMs = useChessClock(opponent, !isMyTurn);
 
   async function handleSquare(square) {
     const piece = pieces[square];
@@ -655,8 +692,26 @@ function ChessPhase({ match, me, selectedSquare, onSelectSquare, onAction }) {
       <div className="rounded-md border border-black/10 bg-white p-4 shadow-sm">
         <h3 className="mb-3 text-lg font-semibold">Chess</h3>
         <div className="mb-3 space-y-2 text-sm">
-          <Metric label="Turn" value={turn} />
+          <div className={`rounded-md border px-3 py-2 ${!isMyTurn ? "border-black/10 bg-[#f7f4ee]" : "border-accent/40 bg-accent/10"}`}>
+            <div className="text-xs font-semibold uppercase tracking-normal text-ink/50">
+              {opponent?.username ?? "Opponent"} ({opponent?.color})
+            </div>
+            <div className={`text-xl font-mono font-bold ${opponentClockMs !== null && opponentClockMs < 30000 ? "text-red-600" : ""}`}>
+              {formatClock(opponentClockMs)}
+            </div>
+          </div>
+
+          <Metric label="Turn" value={`${turn}${isMyTurn ? " (you)" : ""}`} />
           <Metric label="Moves" value={match.chess?.moves.length ?? 0} />
+
+          <div className={`rounded-md border px-3 py-2 ${isMyTurn ? "border-accent/40 bg-accent/10" : "border-black/10 bg-[#f7f4ee]"}`}>
+            <div className="text-xs font-semibold uppercase tracking-normal text-ink/50">
+              {me?.username ?? "You"} ({me?.color})
+            </div>
+            <div className={`text-xl font-mono font-bold ${myClockMs !== null && myClockMs < 30000 ? "text-red-600" : ""}`}>
+              {formatClock(myClockMs)}
+            </div>
+          </div>
         </div>
         <button className="mb-4 w-full rounded-md border border-black/15 px-4 py-2" onClick={() => onAction("/resign")}>
           Resign

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Chess } from "chess.js";
 import {
+  CHESS_CLOCK_MS,
+  CHESS_TIME_BONUS_MS,
+  CHESS_TIME_PENALTY_MS,
+  CHESS_TIME_RECOVER_MS,
   CLICK_PHASE_MS,
   COLORS,
   DEFAULT_PLACEMENTS,
@@ -34,7 +38,9 @@ function createPlayerState(user, color) {
     placedPieces: [],
     ready: false,
     clickTimestamps: [],
-    totalClicks: 0
+    totalClicks: 0,
+    clockMs: CHESS_CLOCK_MS,
+    clockLastUpdatedAt: null
   };
 }
 
@@ -152,7 +158,9 @@ function serializePlayer(player) {
     powerups: player.powerups,
     placedPieces: player.placedPieces,
     ready: player.ready,
-    totalClicks: player.totalClicks
+    totalClicks: player.totalClicks,
+    clockMs: player.clockMs,
+    clockLastUpdatedAt: player.clockLastUpdatedAt
   };
 }
 
@@ -364,6 +372,26 @@ export class GameManager {
     const activeColor = chess.turn() === "w" ? COLORS.WHITE : COLORS.BLACK;
     assertOrThrow(player.color === activeColor, 409, "It is not your turn.");
 
+    // Tick the active player's clock
+    const now = Date.now();
+    if (player.clockLastUpdatedAt) {
+      const elapsed = now - new Date(player.clockLastUpdatedAt).getTime();
+      player.clockMs = Math.max(0, player.clockMs - elapsed);
+    }
+    player.clockLastUpdatedAt = null;
+
+    if (player.clockMs <= 0) {
+      const opponent = getOpponent(match, userId);
+      this.finishMatch(match, opponent?.userId ?? null, "timeout");
+      this.notify(match);
+      return match;
+    }
+
+    // Apply moveTimeRecover powerup
+    if (player.powerups.includes("moveTimeRecover")) {
+      player.clockMs += CHESS_TIME_RECOVER_MS;
+    }
+
     let move;
     try {
       move = chess.move({ from, to, promotion });
@@ -391,6 +419,12 @@ export class GameManager {
         winnerId = player.userId;
       }
       this.finishMatch(match, winnerId, reason);
+    } else {
+      // Start the opponent's clock
+      const opponent = getOpponent(match, userId);
+      if (opponent) {
+        opponent.clockLastUpdatedAt = nowIso();
+      }
     }
 
     this.notify(match);
@@ -414,6 +448,22 @@ export class GameManager {
     for (const match of this.matches.values()) {
       const oldPhase = match.phase;
       this.updateTimedPhase(match);
+
+      // Check chess clock timeouts
+      if (match.phase === PHASES.CHESS) {
+        for (const player of match.players) {
+          if (player.clockLastUpdatedAt) {
+            const elapsed = Date.now() - new Date(player.clockLastUpdatedAt).getTime();
+            if (player.clockMs - elapsed <= 0) {
+              player.clockMs = 0;
+              const opponent = match.players.find((p) => p.userId !== player.userId);
+              this.finishMatch(match, opponent?.userId ?? null, "timeout");
+              break;
+            }
+          }
+        }
+      }
+
       if (match.phase !== oldPhase) {
         this.notify(match);
       }
@@ -467,9 +517,30 @@ export class GameManager {
       fen,
       moves: []
     };
-    match.players.forEach((player) => {
+
+    // Apply clock powerups
+    for (const player of match.players) {
       player.ready = false;
-    });
+      let clock = CHESS_CLOCK_MS;
+
+      if (player.powerups.includes("timeBonus")) {
+        clock += CHESS_TIME_BONUS_MS;
+      }
+
+      const opponent = match.players.find((p) => p.userId !== player.userId);
+      if (opponent?.powerups.includes("timePenalty")) {
+        clock = Math.max(0, clock - CHESS_TIME_PENALTY_MS);
+      }
+
+      player.clockMs = clock;
+      player.clockLastUpdatedAt = null;
+    }
+
+    // White moves first — start white's clock
+    const whitePlayer = match.players.find((p) => p.color === COLORS.WHITE);
+    if (whitePlayer) {
+      whitePlayer.clockLastUpdatedAt = nowIso();
+    }
   }
 
   updateTimedPhase(match) {
@@ -548,4 +619,3 @@ export const testOnly = {
   buildFen,
   canPlaceOnSquare
 };
-
