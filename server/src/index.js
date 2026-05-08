@@ -23,7 +23,7 @@ import { JsonStore } from "./store.js";
 dotenv.config({ path: fileURLToPath(new URL("../../.env", import.meta.url)), quiet: true });
 dotenv.config({ path: fileURLToPath(new URL("../.env", import.meta.url)), quiet: true });
 
-const port = Number(process.env.PORT ?? 4000);
+const port = Number(process.env.PORT ?? 4001);
 const host = process.env.HOST ?? "127.0.0.1";
 const clientOrigins = (process.env.CLIENT_ORIGIN ?? "http://localhost:5173,http://127.0.0.1:5173")
   .split(",")
@@ -103,7 +103,9 @@ function requireMatchAccess(match, userId) {
   }
 }
 
-app.use(helmet());
+if (process.env.NODE_ENV === "production") {
+  app.use(helmet());
+}
 app.use(
   cors({
     origin: clientOrigins,

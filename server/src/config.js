@@ -1,5 +1,9 @@
 export const CLICK_PHASE_MS = Number(process.env.CLICK_PHASE_MS ?? 20000);
 export const MAX_CLICKS_PER_SECOND = Number(process.env.MAX_CLICKS_PER_SECOND ?? 15);
+export const CHESS_CLOCK_MS = Number(process.env.CHESS_CLOCK_MS ?? 300000); // 5 minutes per player
+export const CHESS_TIME_BONUS_MS = 30000; // +30s from timeBonus powerup
+export const CHESS_TIME_PENALTY_MS = 20000; // -20s from timePenalty powerup
+export const CHESS_TIME_RECOVER_MS = 5000; // +5s per move from moveTimeRecover powerup
 
 export const PHASES = {
   WAITING: "waiting",
@@ -60,6 +64,27 @@ export const POWERUP_SHOP = {
     cost: 40,
     maxQuantity: 1,
     description: "Unlock one extra placement rank for non-pawn pieces."
+  },
+  timeBonus: {
+    id: "timeBonus",
+    label: "Time Boost",
+    cost: 30,
+    maxQuantity: 1,
+    description: "Add 30 extra seconds to your chess clock."
+  },
+  timePenalty: {
+    id: "timePenalty",
+    label: "Time Drain",
+    cost: 35,
+    maxQuantity: 1,
+    description: "Reduce your opponent's chess clock by 20 seconds."
+  },
+  moveTimeRecover: {
+    id: "moveTimeRecover",
+    label: "Time Recovery",
+    cost: 50,
+    maxQuantity: 1,
+    description: "Each move you make adds 5 seconds back to your clock."
   }
 };
 
@@ -97,4 +122,3 @@ export const DEFAULT_PLACEMENTS = {
     { pieceType: "pawn", square: "f7" }
   ]
 };
-
