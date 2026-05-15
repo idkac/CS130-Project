@@ -3,6 +3,7 @@ import { io } from "socket.io-client";
 import { apiFetch, SOCKET_URL } from "./api.js";
 import {
   PIECE_LABELS,
+  PIECE_SYMBOLS,
   boardSquares,
   currentTurn,
   isPlacementSquare,
@@ -643,6 +644,8 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
   const pieces = parseFen(match.chess?.fen);
   const turn = currentTurn(match.chess?.fen);
   const isMyTurn = turn === me?.color;
+  const moves = match.chess?.moves ?? [];
+  const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
 
   const myClockMs = useChessClock(me, isMyTurn);
   const opponentClockMs = useChessClock(opponent, !isMyTurn);
@@ -685,6 +688,7 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
           me={me}
           pieces={pieces}
           selectedSquare={selectedSquare}
+          lastMove={lastMove}
           onSquareClick={handleSquare}
         />
       </div>
@@ -728,8 +732,10 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
   );
 }
 
-function GameBoard({ me, pieces, selectedPiece, selectedSquare, onSquareClick }) {
+function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalMoves, onSquareClick }) {
   const squares = boardSquares(me?.color);
+  const lastMoveSquares = lastMove ? new Set([lastMove.from, lastMove.to]) : new Set();
+  const legalSet = legalMoves ? new Set(legalMoves) : new Set();
 
   return (
     <div className="mx-auto grid aspect-square w-full max-w-[640px] grid-cols-8 overflow-hidden rounded-md border border-black/20">
@@ -740,25 +746,36 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, onSquareClick })
         const piece = pieces[square];
         const selected = selectedSquare === square;
         const placeable = selectedPiece && isPlacementSquare(me, selectedPiece, square) && !piece;
+        const isLastMove = lastMoveSquares.has(square);
+        const isLegal = legalSet.has(square);
+
+        let bg = dark ? "bg-boardDark" : "bg-boardLight";
+        if (isLastMove) bg = "bg-amber-300/70";
 
         return (
           <button
-            className={`relative flex min-h-10 items-center justify-center ${
-              dark ? "bg-boardDark" : "bg-boardLight"
-            } ${selected ? "ring-4 ring-accent ring-inset" : ""} ${placeable ? "outline outline-2 outline-white/80" : ""}`}
+            className={`relative flex min-h-10 items-center justify-center ${bg} ${
+              selected ? "ring-4 ring-accent ring-inset" : ""
+            } ${placeable ? "outline outline-2 outline-white/80" : ""}`}
             key={square}
             onClick={() => onSquareClick(square)}
           >
             <span className="absolute left-1 top-0.5 text-[10px] font-semibold text-black/45">{square}</span>
+
+            {isLegal && !piece ? (
+              <span className="h-3 w-3 rounded-full bg-accent/50 pointer-events-none" />
+            ) : null}
+
+            {isLegal && piece && piece.color !== me?.color ? (
+              <span className="absolute inset-0 rounded-sm ring-4 ring-accent/60 ring-inset pointer-events-none" />
+            ) : null}
+
             {piece ? (
               <span
-                className={`flex h-10 w-10 items-center justify-center rounded-md border text-xl font-bold shadow-sm ${
-                  piece.color === "white"
-                    ? "border-black/20 bg-white text-ink"
-                    : "border-white/25 bg-ink text-white"
-                }`}
+                key={`${piece.pieceType}-${piece.color}-${square}`}
+                className="piece-pop relative flex h-10 w-10 items-center justify-center text-3xl leading-none select-none drop-shadow"
               >
-                {piece.label}
+                {PIECE_SYMBOLS[piece.pieceType]?.[piece.color] ?? piece.label}
               </span>
             ) : null}
           </button>
