@@ -859,7 +859,7 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalM
             {piece ? (
               <span
                 key={`${piece.pieceType}-${piece.color}-${square}`}
-                className="piece-pop relative flex h-10 w-10 items-center justify-center text-3xl leading-none select-none drop-shadow"
+                className="piece-pop relative flex h-full w-full items-center justify-center text-6xl leading-none select-none drop-shadow"
               >
                 {PIECE_SYMBOLS[piece.pieceType]?.[piece.color] ?? piece.label}
               </span>
