@@ -26,9 +26,9 @@ test("clicking phase advances to shop after the timer expires", () => {
   manager.joinMatchmaking(bob);
 
   match.phaseEndsAt = new Date(Date.now() - 1000).toISOString();
-  const updated = manager.getMatch(match.id);
+  manager.advanceExpiredMatches();
 
-  assert.equal(updated.phase, PHASES.SHOP);
+  assert.equal(match.phase, PHASES.SHOP);
 });
 
 test("shop purchases affect inventory and placement starts with default pieces", () => {
@@ -37,7 +37,7 @@ test("shop purchases affect inventory and placement starts with default pieces",
   manager.joinMatchmaking(bob);
 
   match.phaseEndsAt = new Date(Date.now() - 1000).toISOString();
-  manager.getMatch(match.id);
+  manager.advanceExpiredMatches();
   match.players[0].pawnCount = 200;
 
   manager.purchase(match.id, alice.id, { itemType: "piece", itemId: "queen" });
@@ -75,7 +75,7 @@ test("placement validates zones and builds a custom FEN", () => {
 // Helper: advance through clicking and shop phases, reaching chess with both kings placed.
 function advanceToChess(manager, matchRef) {
   matchRef.phaseEndsAt = new Date(Date.now() - 1).toISOString();
-  manager.getMatch(matchRef.id); // triggers → shop
+  manager.advanceExpiredMatches(); // triggers → shop
 
   matchRef.players[0].pawnCount = 200;
   matchRef.players[1].pawnCount = 200;

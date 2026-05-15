@@ -240,7 +240,6 @@ export class GameManager {
     if (!match) {
       throw new AppError(404, "Match not found.");
     }
-    this.updateTimedPhase(match);
     return match;
   }
 
