@@ -72,3 +72,91 @@ test("placement validates zones and builds a custom FEN", () => {
   assert.match(testOnly.buildFen([whitePlayer, blackPlayer]), /^4k3\/8\/8\/8\/8\/8\/8\/3QK3 w - - 0 1$/);
 });
 
+// Helper: advance through clicking and shop phases, reaching chess with both kings placed.
+function advanceToChess(manager, matchRef) {
+  matchRef.phaseEndsAt = new Date(Date.now() - 1).toISOString();
+  manager.getMatch(matchRef.id); // triggers → shop
+
+  matchRef.players[0].pawnCount = 200;
+  matchRef.players[1].pawnCount = 200;
+
+  manager.ready(matchRef.id, alice.id);
+  manager.ready(matchRef.id, bob.id); // → placement
+
+  // Both players already have default pieces (king included), so ready up.
+  manager.ready(matchRef.id, alice.id);
+  manager.ready(matchRef.id, bob.id); // → chess
+}
+
+test("timeSiphon drains opponent clock and credits user", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // Give alice the powerup directly (simulating a purchase)
+  match.players[0].powerups.push("timeSiphon");
+  const opponentClockBefore = match.players[1].clockMs;
+  const aliceClockBefore = match.players[0].clockMs;
+
+  manager.usePowerup(match.id, alice.id, { powerupId: "timeSiphon" });
+
+  assert.ok(match.players[1].clockMs < opponentClockBefore, "Opponent clock should decrease");
+  assert.ok(match.players[0].clockMs > aliceClockBefore, "Alice clock should increase");
+  assert.ok(match.players[0].usedPowerups.includes("timeSiphon"), "Marked as used");
+});
+
+test("timeSiphon cannot be activated twice", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("timeSiphon");
+  manager.usePowerup(match.id, alice.id, { powerupId: "timeSiphon" });
+
+  assert.throws(
+    () => manager.usePowerup(match.id, alice.id, { powerupId: "timeSiphon" }),
+    { message: "You have already used this powerup." }
+  );
+});
+
+test("usePowerup rejects unknown or non-activatable powerups", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("moveTimeRecover");
+
+  assert.throws(
+    () => manager.usePowerup(match.id, alice.id, { powerupId: "moveTimeRecover" }),
+    { message: "This powerup is not an active-use item." }
+  );
+});
+
+test("usePowerup rejects if powerup not owned", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  assert.throws(
+    () => manager.usePowerup(match.id, alice.id, { powerupId: "timeSiphon" }),
+    { message: "You do not own this powerup." }
+  );
+});
+
+test("usePowerup rejects outside chess phase", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+
+  match.players[0].powerups.push("timeSiphon");
+
+  assert.throws(
+    () => manager.usePowerup(match.id, alice.id, { powerupId: "timeSiphon" }),
+    { message: "Active powerups can only be used during the chess phase." }
+  );
+});
+
