@@ -79,6 +79,10 @@ const moveSchema = z.object({
   promotion: z.string().min(1).max(1).optional()
 });
 
+const usePowerupSchema = z.object({
+  powerupId: z.string().min(1)
+});
+
 function asyncHandler(handler) {
   return async (req, res, next) => {
     try {
@@ -284,6 +288,18 @@ app.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const match = manager.resign(req.params.matchId, req.auth.user.id);
+    res.json({
+      match: manager.serialize(match)
+    });
+  })
+);
+
+app.post(
+  "/api/matches/:matchId/use-powerup",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const payload = parseBody(usePowerupSchema, req.body);
+    const match = manager.usePowerup(req.params.matchId, req.auth.user.id, payload);
     res.json({
       match: manager.serialize(match)
     });

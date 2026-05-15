@@ -13,7 +13,9 @@ import {
   PHASES,
   PIECE_SHOP,
   PIECE_TO_FEN,
-  POWERUP_SHOP
+  POWERUP_SHOP,
+  TIME_SIPHON_DRAIN_MS,
+  TIME_SIPHON_GAIN_MS
 } from "./config.js";
 import { AppError, assertOrThrow } from "./errors.js";
 
@@ -35,6 +37,7 @@ function createPlayerState(user, color) {
     pawnCount: 0,
     inventory: cloneInventory(),
     powerups: [],
+    usedPowerups: [],
     placedPieces: [],
     ready: false,
     clickTimestamps: [],
@@ -156,6 +159,7 @@ function serializePlayer(player) {
     pawnCount: player.pawnCount,
     inventory: player.inventory,
     powerups: player.powerups,
+    usedPowerups: player.usedPowerups,
     placedPieces: player.placedPieces,
     ready: player.ready,
     totalClicks: player.totalClicks,
@@ -440,6 +444,30 @@ export class GameManager {
     assertOrThrow(Boolean(opponent), 409, "Cannot resign before an opponent joins.");
 
     this.finishMatch(match, opponent.userId, "resignation");
+    this.notify(match);
+    return match;
+  }
+
+  usePowerup(matchId, userId, { powerupId }) {
+    const match = this.getMatch(matchId);
+    assertOrThrow(match.phase === PHASES.CHESS, 409, "Active powerups can only be used during the chess phase.");
+
+    const player = getPlayer(match, userId);
+    const item = POWERUP_SHOP[powerupId];
+    assertOrThrow(item, 400, "Unknown powerup.");
+    assertOrThrow(item.activatable, 400, "This powerup is not an active-use item.");
+    assertOrThrow(player.powerups.includes(powerupId), 400, "You do not own this powerup.");
+    assertOrThrow(!player.usedPowerups.includes(powerupId), 409, "You have already used this powerup.");
+
+    if (powerupId === "timeSiphon") {
+      const opponent = getOpponent(match, userId);
+      assertOrThrow(Boolean(opponent), 409, "No opponent found.");
+
+      opponent.clockMs = Math.max(0, opponent.clockMs - TIME_SIPHON_DRAIN_MS);
+      player.clockMs += TIME_SIPHON_GAIN_MS;
+    }
+
+    player.usedPowerups.push(powerupId);
     this.notify(match);
     return match;
   }

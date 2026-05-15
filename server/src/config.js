@@ -85,8 +85,19 @@ export const POWERUP_SHOP = {
     cost: 50,
     maxQuantity: 1,
     description: "Each move you make adds 5 seconds back to your clock."
+  },
+  timeSiphon: {
+    id: "timeSiphon",
+    label: "Time Siphon",
+    cost: 60,
+    maxQuantity: 1,
+    description: "Active: during chess, drain 30s from your opponent and gain 10s yourself. One use.",
+    activatable: true
   }
 };
+
+export const TIME_SIPHON_DRAIN_MS = 30000;
+export const TIME_SIPHON_GAIN_MS = 10000;
 
 export const PIECE_TO_FEN = {
   king: "k",

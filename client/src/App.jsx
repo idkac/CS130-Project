@@ -763,6 +763,7 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
         <button className="mb-4 w-full rounded-md border border-black/15 px-4 py-2" onClick={() => onAction("/resign")}>
           Resign
         </button>
+        <ActivePowerups me={me} onAction={onAction} />
         <ol className="max-h-80 space-y-1 overflow-auto text-sm">
           {[...(match.chess?.moves ?? [])].reverse().map((move, index) => (
             <li className="rounded-md bg-[#f7f4ee] px-2 py-1" key={`${move.createdAt}-${index}`}>
@@ -770,6 +771,46 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
             </li>
           ))}
         </ol>
+      </div>
+    </div>
+  );
+}
+
+const ACTIVATABLE_POWERUP_LABELS = {
+  timeSiphon: "Time Siphon"
+};
+
+const ACTIVATABLE_POWERUP_DESCRIPTIONS = {
+  timeSiphon: "Drain 30s from opponent, gain 10s."
+};
+
+function ActivePowerups({ me, onAction }) {
+  const owned = me?.powerups ?? [];
+  const used = me?.usedPowerups ?? [];
+  const activatable = owned.filter(
+    (id) => id in ACTIVATABLE_POWERUP_LABELS && !used.includes(id)
+  );
+
+  if (activatable.length === 0) return null;
+
+  return (
+    <div className="mb-4">
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-normal text-ink/50">Active Powerups</h4>
+      <div className="space-y-2">
+        {activatable.map((id) => (
+          <div key={id} className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">{ACTIVATABLE_POWERUP_LABELS[id]}</div>
+              <div className="text-xs text-amber-700">{ACTIVATABLE_POWERUP_DESCRIPTIONS[id]}</div>
+            </div>
+            <button
+              className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-600"
+              onClick={() => onAction("/use-powerup", { body: { powerupId: id } })}
+            >
+              Use
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );
