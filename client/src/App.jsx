@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Chess } from "chess.js";
 import { io } from "socket.io-client";
 import { apiFetch, SOCKET_URL } from "./api.js";
 import {
@@ -640,12 +641,52 @@ function useChessClock(player, isActive) {
   return clockMs;
 }
 
+function useLegalMoves(fen, selectedSquare) {
+  return useMemo(() => {
+    if (!fen || !selectedSquare) return [];
+    try {
+      const chess = new Chess(fen);
+      return chess
+        .moves({ square: selectedSquare, verbose: true })
+        .map((move) => move.to);
+    } catch {
+      return [];
+    }
+  }, [fen, selectedSquare]);
+}
+
+function useCheckedKingSquare(fen, color) {
+  return useMemo(() => {
+    if (!fen || !color) return null;
+    try {
+      const chess = new Chess(fen);
+      if (!chess.inCheck()) return null;
+      const turn = chess.turn() === "w" ? "white" : "black";
+      if (turn !== color) return null;
+      // Find that player's king on the board
+      const board = chess.board();
+      for (const row of board) {
+        for (const cell of row) {
+          if (cell && cell.type === "k" && cell.color === (color === "white" ? "w" : "b")) {
+            return cell.square;
+          }
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }, [fen, color]);
+}
+
 function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAction }) {
   const pieces = parseFen(match.chess?.fen);
   const turn = currentTurn(match.chess?.fen);
   const isMyTurn = turn === me?.color;
   const moves = match.chess?.moves ?? [];
   const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
+  const legalMoves = useLegalMoves(match.chess?.fen, selectedSquare);
+  const checkedKingSquare = useCheckedKingSquare(match.chess?.fen, turn);
 
   const myClockMs = useChessClock(me, isMyTurn);
   const opponentClockMs = useChessClock(opponent, !isMyTurn);
@@ -689,6 +730,8 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
           pieces={pieces}
           selectedSquare={selectedSquare}
           lastMove={lastMove}
+          legalMoves={legalMoves}
+          checkedKingSquare={checkedKingSquare}
           onSquareClick={handleSquare}
         />
       </div>
@@ -732,7 +775,7 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
   );
 }
 
-function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalMoves, onSquareClick }) {
+function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalMoves, checkedKingSquare, onSquareClick }) {
   const squares = boardSquares(me?.color);
   const lastMoveSquares = lastMove ? new Set([lastMove.from, lastMove.to]) : new Set();
   const legalSet = legalMoves ? new Set(legalMoves) : new Set();
@@ -748,9 +791,11 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalM
         const placeable = selectedPiece && isPlacementSquare(me, selectedPiece, square) && !piece;
         const isLastMove = lastMoveSquares.has(square);
         const isLegal = legalSet.has(square);
+        const isInCheck = checkedKingSquare === square;
 
         let bg = dark ? "bg-boardDark" : "bg-boardLight";
-        if (isLastMove) bg = "bg-amber-300/70";
+        if (isLastMove && !isInCheck) bg = "bg-amber-300/70";
+        if (isInCheck) bg = "bg-red-400/75";
 
         return (
           <button
