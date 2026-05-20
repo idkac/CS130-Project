@@ -10,6 +10,15 @@ export const PIECE_LABELS = {
   pawn: "P"
 };
 
+export const PIECE_SYMBOLS = {
+  king:   { white: "♔", black: "♚" },
+  queen:  { white: "♕", black: "♛" },
+  rook:   { white: "♖", black: "♜" },
+  bishop: { white: "♗", black: "♝" },
+  knight: { white: "♘", black: "♞" },
+  pawn:   { white: "♙", black: "♟" }
+};
+
 const FEN_TO_PIECE = {
   k: "king",
   q: "queen",

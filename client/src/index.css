@@ -21,3 +21,13 @@ input {
   font: inherit;
 }
 
+@keyframes piece-pop {
+  0%   { transform: scale(0.65); opacity: 0.4; }
+  60%  { transform: scale(1.12); }
+  100% { transform: scale(1);    opacity: 1;   }
+}
+
+.piece-pop {
+  animation: piece-pop 0.18s ease-out;
+}
+

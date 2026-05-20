@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Chess } from "chess.js";
 import { io } from "socket.io-client";
 import { apiFetch, SOCKET_URL } from "./api.js";
 import {
   PIECE_LABELS,
+  PIECE_SYMBOLS,
   boardSquares,
   currentTurn,
   isPlacementSquare,
@@ -639,10 +641,52 @@ function useChessClock(player, isActive) {
   return clockMs;
 }
 
+function useLegalMoves(fen, selectedSquare) {
+  return useMemo(() => {
+    if (!fen || !selectedSquare) return [];
+    try {
+      const chess = new Chess(fen);
+      return chess
+        .moves({ square: selectedSquare, verbose: true })
+        .map((move) => move.to);
+    } catch {
+      return [];
+    }
+  }, [fen, selectedSquare]);
+}
+
+function useCheckedKingSquare(fen, color) {
+  return useMemo(() => {
+    if (!fen || !color) return null;
+    try {
+      const chess = new Chess(fen);
+      if (!chess.inCheck()) return null;
+      const turn = chess.turn() === "w" ? "white" : "black";
+      if (turn !== color) return null;
+      // Find that player's king on the board
+      const board = chess.board();
+      for (const row of board) {
+        for (const cell of row) {
+          if (cell && cell.type === "k" && cell.color === (color === "white" ? "w" : "b")) {
+            return cell.square;
+          }
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }, [fen, color]);
+}
+
 function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAction }) {
   const pieces = parseFen(match.chess?.fen);
   const turn = currentTurn(match.chess?.fen);
   const isMyTurn = turn === me?.color;
+  const moves = match.chess?.moves ?? [];
+  const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
+  const legalMoves = useLegalMoves(match.chess?.fen, selectedSquare);
+  const checkedKingSquare = useCheckedKingSquare(match.chess?.fen, turn);
 
   const myClockMs = useChessClock(me, isMyTurn);
   const opponentClockMs = useChessClock(opponent, !isMyTurn);
@@ -685,6 +729,9 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
           me={me}
           pieces={pieces}
           selectedSquare={selectedSquare}
+          lastMove={lastMove}
+          legalMoves={legalMoves}
+          checkedKingSquare={checkedKingSquare}
           onSquareClick={handleSquare}
         />
       </div>
@@ -716,6 +763,7 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
         <button className="mb-4 w-full rounded-md border border-black/15 px-4 py-2" onClick={() => onAction("/resign")}>
           Resign
         </button>
+        <ActivePowerups me={me} onAction={onAction} />
         <ol className="max-h-80 space-y-1 overflow-auto text-sm">
           {[...(match.chess?.moves ?? [])].reverse().map((move, index) => (
             <li className="rounded-md bg-[#f7f4ee] px-2 py-1" key={`${move.createdAt}-${index}`}>
@@ -728,8 +776,50 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
   );
 }
 
-function GameBoard({ me, pieces, selectedPiece, selectedSquare, onSquareClick }) {
+const ACTIVATABLE_POWERUP_LABELS = {
+  timeSiphon: "Time Siphon"
+};
+
+const ACTIVATABLE_POWERUP_DESCRIPTIONS = {
+  timeSiphon: "Drain 30s from opponent, gain 10s."
+};
+
+function ActivePowerups({ me, onAction }) {
+  const owned = me?.powerups ?? [];
+  const used = me?.usedPowerups ?? [];
+  const activatable = owned.filter(
+    (id) => id in ACTIVATABLE_POWERUP_LABELS && !used.includes(id)
+  );
+
+  if (activatable.length === 0) return null;
+
+  return (
+    <div className="mb-4">
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-normal text-ink/50">Active Powerups</h4>
+      <div className="space-y-2">
+        {activatable.map((id) => (
+          <div key={id} className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">{ACTIVATABLE_POWERUP_LABELS[id]}</div>
+              <div className="text-xs text-amber-700">{ACTIVATABLE_POWERUP_DESCRIPTIONS[id]}</div>
+            </div>
+            <button
+              className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-600"
+              onClick={() => onAction("/use-powerup", { body: { powerupId: id } })}
+            >
+              Use
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalMoves, checkedKingSquare, onSquareClick }) {
   const squares = boardSquares(me?.color);
+  const lastMoveSquares = lastMove ? new Set([lastMove.from, lastMove.to]) : new Set();
+  const legalSet = legalMoves ? new Set(legalMoves) : new Set();
 
   return (
     <div className="mx-auto grid aspect-square w-full max-w-[640px] grid-cols-8 overflow-hidden rounded-md border border-black/20">
@@ -740,25 +830,38 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, onSquareClick })
         const piece = pieces[square];
         const selected = selectedSquare === square;
         const placeable = selectedPiece && isPlacementSquare(me, selectedPiece, square) && !piece;
+        const isLastMove = lastMoveSquares.has(square);
+        const isLegal = legalSet.has(square);
+        const isInCheck = checkedKingSquare === square;
+
+        let bg = dark ? "bg-boardDark" : "bg-boardLight";
+        if (isLastMove && !isInCheck) bg = "bg-amber-300/70";
+        if (isInCheck) bg = "bg-red-400/75";
 
         return (
           <button
-            className={`relative flex min-h-10 items-center justify-center ${
-              dark ? "bg-boardDark" : "bg-boardLight"
-            } ${selected ? "ring-4 ring-accent ring-inset" : ""} ${placeable ? "outline outline-2 outline-white/80" : ""}`}
+            className={`relative flex min-h-10 items-center justify-center ${bg} ${
+              selected ? "ring-4 ring-accent ring-inset" : ""
+            } ${placeable ? "outline outline-2 outline-white/80" : ""}`}
             key={square}
             onClick={() => onSquareClick(square)}
           >
             <span className="absolute left-1 top-0.5 text-[10px] font-semibold text-black/45">{square}</span>
+
+            {isLegal && !piece ? (
+              <span className="h-3 w-3 rounded-full bg-accent/50 pointer-events-none" />
+            ) : null}
+
+            {isLegal && piece && piece.color !== me?.color ? (
+              <span className="absolute inset-0 rounded-sm ring-4 ring-accent/60 ring-inset pointer-events-none" />
+            ) : null}
+
             {piece ? (
               <span
-                className={`flex h-10 w-10 items-center justify-center rounded-md border text-xl font-bold shadow-sm ${
-                  piece.color === "white"
-                    ? "border-black/20 bg-white text-ink"
-                    : "border-white/25 bg-ink text-white"
-                }`}
+                key={`${piece.pieceType}-${piece.color}-${square}`}
+                className="piece-pop relative flex h-full w-full items-center justify-center text-6xl leading-none select-none drop-shadow"
               >
-                {piece.label}
+                {PIECE_SYMBOLS[piece.pieceType]?.[piece.color] ?? piece.label}
               </span>
             ) : null}
           </button>
