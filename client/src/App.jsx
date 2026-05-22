@@ -822,7 +822,7 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalM
   const legalSet = legalMoves ? new Set(legalMoves) : new Set();
 
   return (
-    <div className="mx-auto grid aspect-square w-full max-w-[640px] grid-cols-8 overflow-hidden rounded-md border border-black/20">
+    <div className="mx-auto grid aspect-square w-full max-w-[640px] grid-cols-8 grid-rows-8 overflow-hidden rounded-md border border-black/20">
       {squares.map((square) => {
         const fileIndex = square.charCodeAt(0) - "a".charCodeAt(0);
         const rank = Number(square[1]);
@@ -840,7 +840,7 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalM
 
         return (
           <button
-            className={`relative flex min-h-10 items-center justify-center ${bg} ${
+            className={`relative flex h-full w-full items-center justify-center ${bg} ${
               selected ? "ring-4 ring-accent ring-inset" : ""
             } ${placeable ? "outline outline-2 outline-white/80" : ""}`}
             key={square}

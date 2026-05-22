@@ -43,8 +43,11 @@ const store = new JsonStore();
 await store.load();
 
 const manager = new GameManager({
-  onMatchChanged: (match) => {
-    io.to(match.id).emit("match:update", manager.serialize(match));
+  onMatchChanged: async (match) => {
+    const sockets = await io.in(match.id).fetchSockets();
+    for (const socket of sockets) {
+      socket.emit("match:update", manager.serialize(match, socket.user?.id));
+    }
   },
   onMatchCompleted: (record) => {
     store.recordCompletedMatch(record).catch((error) => {
@@ -197,7 +200,7 @@ app.post(
   asyncHandler(async (req, res) => {
     const match = manager.joinMatchmaking(req.auth.user);
     res.status(201).json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -209,7 +212,7 @@ app.get(
     const match = manager.getMatch(req.params.matchId);
     requireMatchAccess(match, req.auth.user.id);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -220,7 +223,7 @@ app.post(
   asyncHandler(async (req, res) => {
     const match = manager.registerClick(req.params.matchId, req.auth.user.id);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -232,7 +235,7 @@ app.post(
     const payload = parseBody(purchaseSchema, req.body);
     const match = manager.purchase(req.params.matchId, req.auth.user.id, payload);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -244,7 +247,7 @@ app.post(
     const payload = parseBody(placePieceSchema, req.body);
     const match = manager.placePiece(req.params.matchId, req.auth.user.id, payload);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -255,7 +258,7 @@ app.delete(
   asyncHandler(async (req, res) => {
     const match = manager.removePiece(req.params.matchId, req.auth.user.id, req.params.square);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -266,7 +269,7 @@ app.post(
   asyncHandler(async (req, res) => {
     const match = manager.ready(req.params.matchId, req.auth.user.id);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -278,7 +281,7 @@ app.post(
     const payload = parseBody(moveSchema, req.body);
     const match = manager.submitMove(req.params.matchId, req.auth.user.id, payload);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -289,7 +292,7 @@ app.post(
   asyncHandler(async (req, res) => {
     const match = manager.resign(req.params.matchId, req.auth.user.id);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -301,7 +304,7 @@ app.post(
     const payload = parseBody(usePowerupSchema, req.body);
     const match = manager.usePowerup(req.params.matchId, req.auth.user.id, payload);
     res.json({
-      match: manager.serialize(match)
+      match: manager.serialize(match, req.auth.user.id)
     });
   })
 );
@@ -350,7 +353,7 @@ io.on("connection", (socket) => {
       socket.join(match.id);
       reply?.({
         ok: true,
-        match: manager.serialize(match)
+        match: manager.serialize(match, socket.user.id)
       });
     } catch (error) {
       reply?.({

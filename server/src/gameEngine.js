@@ -616,7 +616,7 @@ export class GameManager {
     };
   }
 
-  serialize(match) {
+  serialize(match, viewerUserId = null) {
     return {
       id: match.id,
       status: match.status,
@@ -625,7 +625,13 @@ export class GameManager {
       phaseStartedAt: match.phaseStartedAt,
       phaseEndsAt: match.phaseEndsAt,
       serverTime: nowIso(),
-      players: match.players.map(serializePlayer),
+      players: match.players.map((player) => {
+        const serialized = serializePlayer(player);
+        if (viewerUserId && match.phase === PHASES.PLACEMENT && player.userId !== viewerUserId) {
+          return { ...serialized, placedPieces: [] };
+        }
+        return serialized;
+      }),
       chess: match.chess,
       winnerId: match.winnerId,
       resultReason: match.resultReason,
