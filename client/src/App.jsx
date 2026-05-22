@@ -679,7 +679,36 @@ function useCheckedKingSquare(fen, color) {
   }, [fen, color]);
 }
 
+const PROMOTION_OPTIONS = [
+  { code: "q", pieceType: "queen" },
+  { code: "r", pieceType: "rook" },
+  { code: "b", pieceType: "bishop" },
+  { code: "n", pieceType: "knight" }
+];
+
+function PromotionDialog({ color, onChoose }) {
+  return (
+    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/50">
+      <div className="rounded-md border border-black/10 bg-white p-4 shadow-lg">
+        <p className="mb-3 text-center text-sm font-semibold">Promote pawn to:</p>
+        <div className="flex gap-2">
+          {PROMOTION_OPTIONS.map(({ code, pieceType }) => (
+            <button
+              key={code}
+              className="flex h-16 w-16 items-center justify-center rounded-md border border-black/15 bg-[#f7f4ee] text-5xl leading-none hover:bg-accent/10 active:translate-y-px"
+              onClick={() => onChoose(code)}
+            >
+              {PIECE_SYMBOLS[pieceType][color]}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAction }) {
+  const [pendingPromotion, setPendingPromotion] = useState(null);
   const pieces = parseFen(match.chess?.fen);
   const turn = currentTurn(match.chess?.fen);
   const isMyTurn = turn === me?.color;
@@ -690,6 +719,18 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
 
   const myClockMs = useChessClock(me, isMyTurn);
   const opponentClockMs = useChessClock(opponent, !isMyTurn);
+
+  function isPromotionMove(from, to) {
+    const piece = pieces[from];
+    if (piece?.pieceType !== "pawn") return false;
+    const toRank = Number(to[1]);
+    return (me?.color === "white" && toRank === 8) || (me?.color === "black" && toRank === 1);
+  }
+
+  async function sendMove(from, to, promotion) {
+    await onAction("/move", { body: { from, to, promotion } });
+    onSelectSquare(null);
+  }
 
   async function handleSquare(square) {
     const piece = pieces[square];
@@ -711,19 +752,25 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
       return;
     }
 
-    await onAction("/move", {
-      body: {
-        from: selectedSquare,
-        to: square,
-        promotion: "q"
-      }
-    });
-    onSelectSquare(null);
+    if (isPromotionMove(selectedSquare, square)) {
+      setPendingPromotion({ from: selectedSquare, to: square });
+      onSelectSquare(null);
+      return;
+    }
+
+    await sendMove(selectedSquare, square, "q");
+  }
+
+  async function handlePromotion(code) {
+    if (!pendingPromotion) return;
+    const { from, to } = pendingPromotion;
+    setPendingPromotion(null);
+    await sendMove(from, to, code);
   }
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
-      <div className="rounded-md border border-black/10 bg-white p-4 shadow-sm">
+      <div className="relative rounded-md border border-black/10 bg-white p-4 shadow-sm">
         <GameBoard
           mode="chess"
           me={me}
@@ -734,6 +781,9 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
           checkedKingSquare={checkedKingSquare}
           onSquareClick={handleSquare}
         />
+        {pendingPromotion ? (
+          <PromotionDialog color={me?.color} onChoose={handlePromotion} />
+        ) : null}
       </div>
 
       <div className="rounded-md border border-black/10 bg-white p-4 shadow-sm">
