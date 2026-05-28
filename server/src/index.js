@@ -76,10 +76,19 @@ const placePieceSchema = z.object({
   square: z.string().min(2).max(2)
 });
 
+const blockSquareSchema = z.object({
+  square: z.string().min(2).max(2)
+});
+
 const moveSchema = z.object({
   from: z.string().min(2).max(2),
   to: z.string().min(2).max(2),
   promotion: z.string().min(1).max(1).optional()
+});
+
+const swapPiecesSchema = z.object({
+  from: z.string().min(2).max(2),
+  to: z.string().min(2).max(2)
 });
 
 const usePowerupSchema = z.object({
@@ -264,6 +273,29 @@ app.delete(
 );
 
 app.post(
+  "/api/matches/:matchId/block-square",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const payload = parseBody(blockSquareSchema, req.body);
+    const match = manager.blockSquare(req.params.matchId, req.auth.user.id, payload);
+    res.json({
+      match: manager.serialize(match, req.auth.user.id)
+    });
+  })
+);
+
+app.delete(
+  "/api/matches/:matchId/block-square/:square",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const match = manager.unblockSquare(req.params.matchId, req.auth.user.id, req.params.square);
+    res.json({
+      match: manager.serialize(match, req.auth.user.id)
+    });
+  })
+);
+
+app.post(
   "/api/matches/:matchId/ready",
   requireAuth,
   asyncHandler(async (req, res) => {
@@ -291,6 +323,18 @@ app.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const match = manager.resign(req.params.matchId, req.auth.user.id);
+    res.json({
+      match: manager.serialize(match, req.auth.user.id)
+    });
+  })
+);
+
+app.post(
+  "/api/matches/:matchId/swap-pieces",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const payload = parseBody(swapPiecesSchema, req.body);
+    const match = manager.swapPieces(req.params.matchId, req.auth.user.id, payload);
     res.json({
       match: manager.serialize(match, req.auth.user.id)
     });

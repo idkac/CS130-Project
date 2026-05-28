@@ -10,9 +10,9 @@ Implemented in this prototype:
 - File-backed local user records and completed match history.
 - Two-player matchmaking through a shared local queue.
 - Timed clicking phase with server-side click-rate validation.
-- Shop phase for buying chess pieces and the Forward Deployment powerup.
-- Placement phase with server-side board-zone and inventory validation.
-- Chess phase with legal move validation through `chess.js`.
+- Shop phase for buying chess pieces, clock powerups, and strategic piece/placement powerups.
+- Placement phase with server-side board-zone, inventory, expanded-rank, and mine validation.
+- Chess phase with `chess.js` plus server-side powerup-aware move validation.
 - Match completion through checkmate, draw, stalemate, or resignation.
 - React UI for lobby, clicking, shop, placement, chess, and history.
 
@@ -20,7 +20,7 @@ Deferred from the full design doc:
 
 - Redis/PostgreSQL infrastructure.
 - Production authentication and persistent sessions.
-- Ranked matchmaking, MMR, AI opponents, and advanced powerups.
+- Ranked matchmaking, MMR, AI opponents, and production-only powerup balancing.
 - Large-scale multiplayer deployment.
 
 ## Tech Stack
@@ -54,7 +54,7 @@ cp client/.env.example client/.env
 
 The defaults are enough for local development:
 
-- Backend: `http://127.0.0.1:4000`
+- Backend: `http://127.0.0.1:4001`
 - Frontend: `http://127.0.0.1:5173`
 
 ## Run Locally
@@ -81,7 +81,7 @@ http://127.0.0.1:5173/
 If `npm run dev` reports `EADDRINUSE`, another copy of the dev server is already running on that port. Stop the old process, then rerun `npm run dev`:
 
 ```bash
-lsof -tiTCP:4000 -sTCP:LISTEN
+lsof -tiTCP:4001 -sTCP:LISTEN
 lsof -tiTCP:5173 -sTCP:LISTEN
 kill <pid>
 ```
@@ -101,11 +101,11 @@ npm start       # start backend server
 1. Register or log in.
 2. Join matchmaking.
 3. Click during the timed phase to earn pawn currency.
-4. Spend pawns on pieces or the Forward Deployment powerup.
+4. Spend pawns on pieces or powerups.
 5. Ready up for placement.
-6. Place pieces on your allowed ranks.
+6. Place pieces on your allowed ranks and place mines if purchased.
 7. Ready up to start chess.
-8. Play legal chess moves until the game ends or a player resigns.
+8. Play legal chess moves and active powerups until the game ends or a player resigns.
 
 The backend is the source of truth for clicks, purchases, placements, moves, phase transitions, and match results.
 
@@ -138,8 +138,12 @@ The MVP includes the design-doc API shape with `/api` prefixed routes:
 - `POST /api/matches/:matchId/purchase`
 - `POST /api/matches/:matchId/place-piece`
 - `DELETE /api/matches/:matchId/place-piece/:square`
+- `POST /api/matches/:matchId/block-square`
+- `DELETE /api/matches/:matchId/block-square/:square`
 - `POST /api/matches/:matchId/ready`
 - `POST /api/matches/:matchId/move`
+- `POST /api/matches/:matchId/swap-pieces`
+- `POST /api/matches/:matchId/use-powerup`
 - `POST /api/matches/:matchId/resign`
 - `GET /api/matches/:matchId`
 - `GET /api/users/:userId/history`
