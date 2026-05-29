@@ -18,7 +18,8 @@ import {
 } from "./auth.js";
 import { AppError } from "./errors.js";
 import { GameManager } from "./gameEngine.js";
-import { JsonStore } from "./store.js";
+//import { JsonStore } from "./store.js";
+import { PgStore } from "./pgStore.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../../.env", import.meta.url)), quiet: true });
 dotenv.config({ path: fileURLToPath(new URL("../.env", import.meta.url)), quiet: true });
@@ -39,7 +40,8 @@ const io = new SocketServer(server, {
   }
 });
 
-const store = new JsonStore();
+//const store = new JsonStore();
+const store = new PgStore();
 await store.load();
 
 const manager = new GameManager({
