@@ -16,6 +16,8 @@ import {
 const STORED_TOKEN = "clickmate:token";
 const STORED_USER = "clickmate:user";
 const PIECE_ORDER = ["king", "queen", "rook", "bishop", "knight", "pawn"];
+const BLOCKED_SQUARES_PER_POWERUP = 2;
+const TURN_POWERUP_IDS = new Set(["bishopKnights", "queenRooks", "pieceSwap"]);
 
 function readStoredUser() {
   try {
@@ -31,6 +33,15 @@ function formatPhase(phase) {
 
 function shortId(id) {
   return id ? id.slice(0, 8) : "";
+}
+
+function isMinePlacementSquare(player, square) {
+  if (!player || !square) {
+    return false;
+  }
+
+  const rank = Number(square[1]);
+  return player.color === "white" ? rank < 7 : rank > 2;
 }
 
 function useNow(intervalMs = 250) {
@@ -538,13 +549,44 @@ function PlacementPhase({
   onSelectSquare,
   onAction
 }) {
+  const [blockMode, setBlockMode] = useState(false);
   const remaining = remainingInventory(me);
   const pieces = placementPieces(match);
   const hasKing = me?.placedPieces.some((piece) => piece.pieceType === "king");
+  const myMineSquares = me?.blockedSquares ?? [];
+  const mineLimit =
+    (me?.powerups.filter((powerup) => powerup === "squareBlockade").length ?? 0) * BLOCKED_SQUARES_PER_POWERUP;
+  const canUseMines = mineLimit > 0;
+  const mineSquares = useMemo(() => {
+    const mines = {};
+    for (const player of match?.players ?? []) {
+      for (const square of player.blockedSquares ?? []) {
+        mines[square] = {
+          color: player.color,
+          owned: player.userId === me?.userId
+        };
+      }
+    }
+    return mines;
+  }, [match?.players, me?.userId]);
 
   async function handleSquare(square) {
     const piece = pieces[square];
     onSelectSquare(square);
+
+    if (blockMode) {
+      if (myMineSquares.includes(square)) {
+        await onAction(`/block-square/${square}`, { method: "DELETE" });
+        return;
+      }
+
+      if (!piece && isMinePlacementSquare(me, square)) {
+        await onAction("/block-square", {
+          body: { square }
+        });
+      }
+      return;
+    }
 
     if (piece?.color === me?.color) {
       await onAction(`/place-piece/${square}`, { method: "DELETE" });
@@ -568,6 +610,8 @@ function PlacementPhase({
           mode="placement"
           me={me}
           pieces={pieces}
+          blockedSquares={mineSquares}
+          blockMode={blockMode}
           selectedPiece={selectedPiece}
           selectedSquare={selectedSquare}
           onSquareClick={handleSquare}
@@ -585,12 +629,29 @@ function PlacementPhase({
                   : "border-black/10 bg-[#f7f4ee]"
               }`}
               key={pieceType}
-              onClick={() => onSelectPiece(pieceType)}
+              onClick={() => {
+                setBlockMode(false);
+                onSelectPiece(pieceType);
+              }}
             >
               {PIECE_LABELS[pieceType]} x{remaining[pieceType]}
             </button>
           ))}
         </div>
+        {canUseMines ? (
+          <button
+            className={`mb-4 w-full rounded-md border px-3 py-2 text-sm font-semibold ${
+              blockMode ? "border-amber-500 bg-amber-100 text-amber-950" : "border-black/10 bg-[#f7f4ee]"
+            }`}
+            disabled={me?.ready}
+            onClick={() => {
+              setBlockMode((enabled) => !enabled);
+              onSelectPiece(null);
+            }}
+          >
+            Place mines {myMineSquares.length}/{mineLimit}
+          </button>
+        ) : null}
         {opponent ? (
           <div className={`mb-2 text-sm px-2 py-1 rounded-md ${opponent.ready ? "bg-green-100 text-green-800" : "bg-black/5 text-ink/50"}`}>
             {opponent.username}: {opponent.ready ? "Ready ✓" : "Placing pieces…"}
@@ -641,18 +702,23 @@ function useChessClock(player, isActive) {
   return clockMs;
 }
 
-function useLegalMoves(fen, selectedSquare) {
+function useLegalMoves(match, selectedSquare) {
   return useMemo(() => {
-    if (!fen || !selectedSquare) return [];
+    if (!match?.chess?.fen || !selectedSquare) return [];
+    const serverMoves = match.legalMoves?.[selectedSquare];
+    if (serverMoves) {
+      return serverMoves;
+    }
+
     try {
-      const chess = new Chess(fen);
+      const chess = new Chess(match.chess.fen);
       return chess
         .moves({ square: selectedSquare, verbose: true })
         .map((move) => move.to);
     } catch {
       return [];
     }
-  }, [fen, selectedSquare]);
+  }, [match?.chess?.fen, match?.legalMoves, selectedSquare]);
 }
 
 function useCheckedKingSquare(fen, color) {
@@ -709,12 +775,26 @@ function PromotionDialog({ color, onChoose }) {
 
 function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAction }) {
   const [pendingPromotion, setPendingPromotion] = useState(null);
+  const [swapMode, setSwapMode] = useState(false);
+  const [swapFrom, setSwapFrom] = useState(null);
   const pieces = parseFen(match.chess?.fen);
   const turn = currentTurn(match.chess?.fen);
   const isMyTurn = turn === me?.color;
+  const mineSquares = useMemo(() => {
+    const mines = {};
+    for (const player of match?.players ?? []) {
+      for (const square of player.blockedSquares ?? []) {
+        mines[square] = {
+          color: player.color,
+          owned: player.userId === me?.userId
+        };
+      }
+    }
+    return mines;
+  }, [match?.players, me?.userId]);
   const moves = match.chess?.moves ?? [];
   const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
-  const legalMoves = useLegalMoves(match.chess?.fen, selectedSquare);
+  const legalMoves = useLegalMoves(match, selectedSquare);
   const checkedKingSquare = useCheckedKingSquare(match.chess?.fen, turn);
 
   const myClockMs = useChessClock(me, isMyTurn);
@@ -734,6 +814,38 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
 
   async function handleSquare(square) {
     const piece = pieces[square];
+
+    if (swapMode) {
+      if (!isMyTurn) {
+        return;
+      }
+
+      if (piece?.color !== me?.color) {
+        return;
+      }
+
+      if (!swapFrom) {
+        setSwapFrom(square);
+        onSelectSquare(null);
+        return;
+      }
+
+      if (swapFrom === square) {
+        setSwapFrom(null);
+        return;
+      }
+
+      await onAction("/swap-pieces", {
+        body: {
+          from: swapFrom,
+          to: square
+        }
+      });
+      setSwapMode(false);
+      setSwapFrom(null);
+      onSelectSquare(null);
+      return;
+    }
 
     if (!selectedSquare) {
       if (piece?.color === me?.color && isMyTurn) {
@@ -775,7 +887,9 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
           mode="chess"
           me={me}
           pieces={pieces}
+          blockedSquares={mineSquares}
           selectedSquare={selectedSquare}
+          markedSquares={swapFrom ? new Set([swapFrom]) : null}
           lastMove={lastMove}
           legalMoves={legalMoves}
           checkedKingSquare={checkedKingSquare}
@@ -813,7 +927,17 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
         <button className="mb-4 w-full rounded-md border border-black/15 px-4 py-2" onClick={() => onAction("/resign")}>
           Resign
         </button>
-        <ActivePowerups me={me} onAction={onAction} />
+        <ActivePowerups
+          me={me}
+          isMyTurn={isMyTurn}
+          swapMode={swapMode}
+          onAction={onAction}
+          onStartSwap={() => {
+            setSwapMode((enabled) => !enabled);
+            setSwapFrom(null);
+            onSelectSquare(null);
+          }}
+        />
         <ol className="max-h-80 space-y-1 overflow-auto text-sm">
           {[...(match.chess?.moves ?? [])].reverse().map((move, index) => (
             <li className="rounded-md bg-[#f7f4ee] px-2 py-1" key={`${move.createdAt}-${index}`}>
@@ -827,14 +951,20 @@ function ChessPhase({ match, me, opponent, selectedSquare, onSelectSquare, onAct
 }
 
 const ACTIVATABLE_POWERUP_LABELS = {
+  bishopKnights: "Diagonal Knights",
+  pieceSwap: "Tactical Swap",
+  queenRooks: "Royal Rooks",
   timeSiphon: "Time Siphon"
 };
 
 const ACTIVATABLE_POWERUP_DESCRIPTIONS = {
+  bishopKnights: "This turn, knights can slide diagonally.",
+  pieceSwap: "Swap two of your pieces. Uses your turn.",
+  queenRooks: "This turn, rooks can move diagonally.",
   timeSiphon: "Drain 30s from opponent, gain 10s."
 };
 
-function ActivePowerups({ me, onAction }) {
+function ActivePowerups({ me, isMyTurn, swapMode, onAction, onStartSwap }) {
   const owned = me?.powerups ?? [];
   const used = me?.usedPowerups ?? [];
   const activatable = owned.filter(
@@ -854,10 +984,15 @@ function ActivePowerups({ me, onAction }) {
               <div className="text-xs text-amber-700">{ACTIVATABLE_POWERUP_DESCRIPTIONS[id]}</div>
             </div>
             <button
-              className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-600"
-              onClick={() => onAction("/use-powerup", { body: { powerupId: id } })}
+              className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-black/25"
+              disabled={TURN_POWERUP_IDS.has(id) && !isMyTurn}
+              onClick={() =>
+                id === "pieceSwap"
+                  ? onStartSwap()
+                  : onAction("/use-powerup", { body: { powerupId: id } })
+              }
             >
-              Use
+              {id === "pieceSwap" && swapMode ? "Cancel" : "Use"}
             </button>
           </div>
         ))}
@@ -866,7 +1001,19 @@ function ActivePowerups({ me, onAction }) {
   );
 }
 
-function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalMoves, checkedKingSquare, onSquareClick }) {
+function GameBoard({
+  me,
+  pieces,
+  blockedSquares = {},
+  blockMode = false,
+  selectedPiece,
+  selectedSquare,
+  markedSquares,
+  lastMove,
+  legalMoves,
+  checkedKingSquare,
+  onSquareClick
+}) {
   const squares = boardSquares(me?.color);
   const lastMoveSquares = lastMove ? new Set([lastMove.from, lastMove.to]) : new Set();
   const legalSet = legalMoves ? new Set(legalMoves) : new Set();
@@ -878,8 +1025,11 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalM
         const rank = Number(square[1]);
         const dark = (fileIndex + rank) % 2 === 1;
         const piece = pieces[square];
+        const blocked = blockedSquares[square];
         const selected = selectedSquare === square;
+        const marked = markedSquares?.has(square);
         const placeable = selectedPiece && isPlacementSquare(me, selectedPiece, square) && !piece;
+        const blockable = blockMode && isMinePlacementSquare(me, square) && !piece && !blocked;
         const isLastMove = lastMoveSquares.has(square);
         const isLegal = legalSet.has(square);
         const isInCheck = checkedKingSquare === square;
@@ -892,11 +1042,25 @@ function GameBoard({ me, pieces, selectedPiece, selectedSquare, lastMove, legalM
           <button
             className={`relative flex h-full w-full items-center justify-center ${bg} ${
               selected ? "ring-4 ring-accent ring-inset" : ""
-            } ${placeable ? "outline outline-2 outline-white/80" : ""}`}
+            } ${marked ? "ring-4 ring-amber-500 ring-inset" : ""} ${
+              placeable || blockable ? "outline outline-2 outline-white/80" : ""
+            }`}
             key={square}
             onClick={() => onSquareClick(square)}
           >
             <span className="absolute left-1 top-0.5 text-[10px] font-semibold text-black/45">{square}</span>
+
+            {blocked ? (
+              <span
+                className={`absolute inset-1 flex items-center justify-center rounded-sm border-2 text-xs font-bold ${
+                  blocked.owned
+                    ? "border-amber-700/80 bg-amber-300/45 text-amber-950"
+                    : "border-red-800/75 bg-red-300/45 text-red-950"
+                }`}
+              >
+                M
+              </span>
+            ) : null}
 
             {isLegal && !piece ? (
               <span className="h-3 w-3 rounded-full bg-accent/50 pointer-events-none" />

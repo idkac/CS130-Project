@@ -98,7 +98,10 @@ export function isPlacementSquare(player, pieceType, square) {
   const expanded = player.powerups.includes("expandedDeployment");
 
   if (pieceType === "pawn") {
-    return player.color === "white" ? rank === 2 : rank === 7;
+    if (player.color === "white") {
+      return rank === 2 || (expanded && rank === 3);
+    }
+    return rank === 7 || (expanded && rank === 6);
   }
 
   if (player.color === "white") {
@@ -114,4 +117,3 @@ export function currentTurn(fen) {
   }
   return fen.split(" ")[1] === "b" ? "black" : "white";
 }
-

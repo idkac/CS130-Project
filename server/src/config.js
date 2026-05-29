@@ -4,6 +4,7 @@ export const CHESS_CLOCK_MS = Number(process.env.CHESS_CLOCK_MS ?? 300000); // 5
 export const CHESS_TIME_BONUS_MS = 30000; // +30s from timeBonus powerup
 export const CHESS_TIME_PENALTY_MS = 20000; // -20s from timePenalty powerup
 export const CHESS_TIME_RECOVER_MS = 5000; // +5s per move from moveTimeRecover powerup
+export const BLOCKED_SQUARES_PER_POWERUP = 2;
 
 export const PHASES = {
   WAITING: "waiting",
@@ -63,7 +64,45 @@ export const POWERUP_SHOP = {
     label: "Forward Deployment",
     cost: 40,
     maxQuantity: 1,
-    description: "Unlock one extra placement rank for non-pawn pieces."
+    description: "Unlock one extra placement rank for all pieces."
+  },
+  doubleStepPawns: {
+    id: "doubleStepPawns",
+    label: "Pawn Surge",
+    cost: 45,
+    maxQuantity: 1,
+    description: "Your pawns may advance two empty squares from any rank."
+  },
+  bishopKnights: {
+    id: "bishopKnights",
+    label: "Diagonal Knights",
+    cost: 70,
+    maxQuantity: 1,
+    description: "Active: for this turn only, your knights can slide diagonally like bishops. One use.",
+    activatable: true
+  },
+  queenRooks: {
+    id: "queenRooks",
+    label: "Royal Rooks",
+    cost: 90,
+    maxQuantity: 1,
+    description: "Active: for this turn only, your rooks can move diagonally like queens. One use.",
+    activatable: true
+  },
+  squareBlockade: {
+    id: "squareBlockade",
+    label: "Minefield",
+    cost: 50,
+    maxQuantity: 1,
+    description: "During placement, mine two empty squares outside your opponent's back two ranks."
+  },
+  pieceSwap: {
+    id: "pieceSwap",
+    label: "Tactical Swap",
+    cost: 75,
+    maxQuantity: 1,
+    description: "Active: once during chess, swap two of your pieces. Uses your turn.",
+    activatable: true
   },
   timeBonus: {
     id: "timeBonus",

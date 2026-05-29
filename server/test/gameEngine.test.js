@@ -72,8 +72,51 @@ test("placement validates zones and builds a custom FEN", () => {
   assert.match(testOnly.buildFen([whitePlayer, blackPlayer]), /^4k3\/8\/8\/8\/8\/8\/8\/3QK3 w - - 0 1$/);
 });
 
-// Helper: advance through clicking and shop phases, reaching chess with both kings placed.
-function advanceToChess(manager, matchRef) {
+test("expandedDeployment allows pawns on the forward rank", () => {
+  const whitePlayer = {
+    color: "white",
+    powerups: ["expandedDeployment"],
+    placedPieces: []
+  };
+  const blackPlayer = {
+    color: "black",
+    powerups: ["expandedDeployment"],
+    placedPieces: []
+  };
+
+  assert.equal(testOnly.canPlaceOnSquare(whitePlayer, "pawn", "e3"), true);
+  assert.equal(testOnly.canPlaceOnSquare(blackPlayer, "pawn", "e6"), true);
+});
+
+test("squareBlockade acts as a one-shot mine during placement", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToPlacement(manager, match);
+
+  match.players[0].powerups.push("squareBlockade");
+  assert.throws(
+    () => manager.blockSquare(match.id, alice.id, { square: "a7" }),
+    { message: "Mines cannot be placed in the opponent's back two ranks." }
+  );
+
+  manager.blockSquare(match.id, alice.id, { square: "a6" });
+  assert.deepEqual(match.players[0].blockedSquares, ["a6"]);
+
+  match.players[1].inventory.pawn = 5;
+  match.players[1].powerups.push("expandedDeployment");
+  manager.placePiece(match.id, bob.id, { pieceType: "pawn", square: "a6" });
+
+  assert.deepEqual(match.players[0].blockedSquares, []);
+  assert.equal(match.players[1].inventory.pawn, 4);
+  assert.equal(match.players[1].placedPieces.some((piece) => piece.square === "a6"), false);
+
+  match.players[1].inventory.pawn = 5;
+  manager.placePiece(match.id, bob.id, { pieceType: "pawn", square: "a6" });
+  assert.equal(match.players[1].placedPieces.some((piece) => piece.square === "a6"), true);
+});
+
+function advanceToPlacement(manager, matchRef) {
   matchRef.phaseEndsAt = new Date(Date.now() - 1).toISOString();
   manager.advanceExpiredMatches(); // triggers → shop
 
@@ -82,6 +125,11 @@ function advanceToChess(manager, matchRef) {
 
   manager.ready(matchRef.id, alice.id);
   manager.ready(matchRef.id, bob.id); // → placement
+}
+
+// Helper: advance through clicking and shop phases, reaching chess with both kings placed.
+function advanceToChess(manager, matchRef) {
+  advanceToPlacement(manager, matchRef);
 
   // Both players already have default pieces (king included), so ready up.
   manager.ready(matchRef.id, alice.id);
@@ -104,6 +152,103 @@ test("timeSiphon drains opponent clock and credits user", () => {
   assert.ok(match.players[1].clockMs < opponentClockBefore, "Opponent clock should decrease");
   assert.ok(match.players[0].clockMs > aliceClockBefore, "Alice clock should increase");
   assert.ok(match.players[0].usedPowerups.includes("timeSiphon"), "Marked as used");
+});
+
+test("doubleStepPawns allows a pawn to advance two squares from a non-starting rank", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("doubleStepPawns");
+  match.chess.fen = "4k3/8/8/8/8/4P3/8/4K3 w - - 0 1";
+
+  manager.submitMove(match.id, alice.id, { from: "e3", to: "e5" });
+
+  assert.match(match.chess.fen, /^4k3\/8\/8\/4P3\/8\/8\/8\/4K3 b/);
+});
+
+test("bishopKnights is a one-turn activation for diagonal knight moves", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("bishopKnights");
+  match.chess.fen = "7k/8/8/8/8/8/8/K1N5 w - - 0 1";
+
+  assert.throws(
+    () => manager.submitMove(match.id, alice.id, { from: "c1", to: "h6" }),
+    { message: "Illegal chess move." }
+  );
+
+  manager.usePowerup(match.id, alice.id, { powerupId: "bishopKnights" });
+  assert.deepEqual(match.players[0].activePowerups, ["bishopKnights"]);
+
+  manager.submitMove(match.id, alice.id, { from: "c1", to: "h6" });
+
+  assert.match(match.chess.fen, /^7k\/8\/7N\/8\/8\/8\/8\/K7 b/);
+  assert.equal(match.players[0].usedPowerups.includes("bishopKnights"), true);
+  assert.deepEqual(match.players[0].activePowerups, []);
+});
+
+test("queenRooks is a one-turn activation for diagonal rook moves", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("queenRooks");
+  match.chess.fen = "7k/8/8/8/8/8/8/R3K3 w - - 0 1";
+
+  assert.throws(
+    () => manager.submitMove(match.id, alice.id, { from: "a1", to: "g7" }),
+    { message: "Illegal chess move." }
+  );
+
+  manager.usePowerup(match.id, alice.id, { powerupId: "queenRooks" });
+  manager.submitMove(match.id, alice.id, { from: "a1", to: "g7" });
+
+  assert.match(match.chess.fen, /^7k\/6R1\/8\/8\/8\/8\/8\/4K3 b/);
+  assert.equal(match.players[0].usedPowerups.includes("queenRooks"), true);
+  assert.deepEqual(match.players[0].activePowerups, []);
+});
+
+test("squareBlockade mine removes a piece that moves onto it during chess", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].blockedSquares.push("e6");
+  match.chess.fen = "4k3/4p3/8/8/8/8/8/4K3 b - - 0 1";
+
+  manager.submitMove(match.id, bob.id, { from: "e7", to: "e6" });
+
+  assert.match(match.chess.fen, /^4k3\/8\/8\/8\/8\/8\/8\/4K3 w/);
+  assert.deepEqual(match.players[0].blockedSquares, []);
+  assert.equal(match.chess.moves.at(-1).mineTriggered.square, "e6");
+});
+
+test("pieceSwap swaps two owned pieces once and uses the turn", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("pieceSwap");
+  match.chess.fen = "4k3/8/8/8/8/8/8/RN2K3 w - - 0 1";
+
+  manager.swapPieces(match.id, alice.id, { from: "a1", to: "b1" });
+
+  assert.match(match.chess.fen, /^4k3\/8\/8\/8\/8\/8\/8\/NR2K3 b/);
+  assert.equal(match.players[0].usedPowerups.includes("pieceSwap"), true);
+  assert.match(match.chess.moves.at(-1).san, /^Swap Ra1<->Nb1$/);
+
+  assert.throws(
+    () => manager.swapPieces(match.id, alice.id, { from: "a1", to: "b1" }),
+    { message: "You have already used this powerup." }
+  );
 });
 
 test("timeSiphon cannot be activated twice", () => {
@@ -159,4 +304,3 @@ test("usePowerup rejects outside chess phase", () => {
     { message: "Active powerups can only be used during the chess phase." }
   );
 });
-

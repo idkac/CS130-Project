@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Chess } from "chess.js";
 import {
+  BLOCKED_SQUARES_PER_POWERUP,
   CHESS_CLOCK_MS,
   CHESS_TIME_BONUS_MS,
   CHESS_TIME_PENALTY_MS,
@@ -20,6 +21,22 @@ import {
 import { AppError, assertOrThrow } from "./errors.js";
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
+const ALL_SQUARES = FILES.flatMap((file) =>
+  Array.from({ length: 8 }, (_value, index) => `${file}${index + 1}`)
+);
+const PROMOTION_PIECES = new Set(["q", "r", "b", "n"]);
+const PIECE_FROM_FEN = Object.fromEntries(
+  Object.entries(PIECE_TO_FEN).map(([pieceType, fenPiece]) => [fenPiece, pieceType])
+);
+const PIECE_SAN = {
+  king: "K",
+  queen: "Q",
+  rook: "R",
+  bishop: "B",
+  knight: "N",
+  pawn: ""
+};
+const TURN_POWERUPS = new Set(["bishopKnights", "queenRooks"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -38,6 +55,8 @@ function createPlayerState(user, color) {
     inventory: cloneInventory(),
     powerups: [],
     usedPowerups: [],
+    activePowerups: [],
+    blockedSquares: [],
     placedPieces: [],
     ready: false,
     clickTimestamps: [],
@@ -63,7 +82,10 @@ function canPlaceOnSquare(player, pieceType, square) {
   const rank = getRank(square);
 
   if (pieceType === "pawn") {
-    return player.color === COLORS.WHITE ? rank === 2 : rank === 7;
+    if (player.color === COLORS.WHITE) {
+      return rank === 2 || (isExpanded(player) && rank === 3);
+    }
+    return rank === 7 || (isExpanded(player) && rank === 6);
   }
 
   if (player.color === COLORS.WHITE) {
@@ -160,6 +182,8 @@ function serializePlayer(player) {
     inventory: player.inventory,
     powerups: player.powerups,
     usedPowerups: player.usedPowerups,
+    activePowerups: player.activePowerups,
+    blockedSquares: player.blockedSquares,
     placedPieces: player.placedPieces,
     ready: player.ready,
     totalClicks: player.totalClicks,
@@ -168,17 +192,467 @@ function serializePlayer(player) {
   };
 }
 
-function getGameOverReason(chess) {
-  if (chess.isCheckmate()) {
-    return "checkmate";
+function otherColor(color) {
+  return color === COLORS.WHITE ? COLORS.BLACK : COLORS.WHITE;
+}
+
+function colorToTurn(color) {
+  return color === COLORS.WHITE ? "w" : "b";
+}
+
+function turnToColor(turn) {
+  return turn === "b" ? COLORS.BLACK : COLORS.WHITE;
+}
+
+function getFileIndex(square) {
+  return FILES.indexOf(square[0]);
+}
+
+function getRankIndex(square) {
+  return Number(square[1]);
+}
+
+function makeSquare(fileIndex, rank) {
+  if (fileIndex < 0 || fileIndex >= FILES.length || rank < 1 || rank > 8) {
+    return null;
   }
-  if (chess.isStalemate()) {
-    return "stalemate";
+  return `${FILES[fileIndex]}${rank}`;
+}
+
+function parseFenState(fen) {
+  const [placement, turn = "w", _castling = "-", _enPassant = "-", halfmove = "0", fullmove = "1"] = fen.split(" ");
+  const board = new Map();
+  const rows = placement.split("/");
+
+  rows.forEach((row, rowIndex) => {
+    const rank = 8 - rowIndex;
+    let fileIndex = 0;
+
+    for (const char of row) {
+      if (/^[1-8]$/.test(char)) {
+        fileIndex += Number(char);
+        continue;
+      }
+
+      const pieceType = PIECE_FROM_FEN[char.toLowerCase()];
+      const square = makeSquare(fileIndex, rank);
+      if (pieceType && square) {
+        board.set(square, {
+          pieceType,
+          color: char === char.toUpperCase() ? COLORS.WHITE : COLORS.BLACK
+        });
+      }
+      fileIndex += 1;
+    }
+  });
+
+  return {
+    board,
+    turn,
+    halfmove: Number(halfmove),
+    fullmove: Number(fullmove)
+  };
+}
+
+function buildFenFromState(board, { turn, halfmove, fullmove }) {
+  const rows = [];
+
+  for (let rank = 8; rank >= 1; rank -= 1) {
+    let row = "";
+    let empty = 0;
+
+    for (const file of FILES) {
+      const square = `${file}${rank}`;
+      const piece = board.get(square);
+
+      if (!piece) {
+        empty += 1;
+        continue;
+      }
+
+      if (empty > 0) {
+        row += String(empty);
+        empty = 0;
+      }
+
+      const fenPiece = PIECE_TO_FEN[piece.pieceType];
+      row += piece.color === COLORS.WHITE ? fenPiece.toUpperCase() : fenPiece;
+    }
+
+    if (empty > 0) {
+      row += String(empty);
+    }
+    rows.push(row);
   }
-  if (chess.isDraw()) {
-    return "draw";
+
+  return `${rows.join("/")} ${turn} - - ${halfmove} ${fullmove}`;
+}
+
+function getPlayerByColor(match, color) {
+  return match.players.find((player) => player.color === color) ?? null;
+}
+
+function hasPowerup(player, powerupId) {
+  return player?.powerups.includes(powerupId);
+}
+
+function hasActivePowerup(player, powerupId) {
+  return player?.activePowerups.includes(powerupId);
+}
+
+function clearTurnPowerups(player) {
+  player.activePowerups = player.activePowerups.filter((powerupId) => !TURN_POWERUPS.has(powerupId));
+}
+
+function isLineClear(board, from, to) {
+  const fromFile = getFileIndex(from);
+  const toFile = getFileIndex(to);
+  const fromRank = getRankIndex(from);
+  const toRank = getRankIndex(to);
+  const fileStep = Math.sign(toFile - fromFile);
+  const rankStep = Math.sign(toRank - fromRank);
+
+  let file = fromFile + fileStep;
+  let rank = fromRank + rankStep;
+  while (file !== toFile || rank !== toRank) {
+    const square = makeSquare(file, rank);
+    if (!square || board.has(square)) {
+      return false;
+    }
+    file += fileStep;
+    rank += rankStep;
   }
-  return "game_over";
+
+  return true;
+}
+
+function pieceAttacksSquare(match, board, from, targetSquare) {
+  const piece = board.get(from);
+  if (!piece || from === targetSquare) {
+    return false;
+  }
+
+  const owner = getPlayerByColor(match, piece.color);
+  const fileDelta = getFileIndex(targetSquare) - getFileIndex(from);
+  const rankDelta = getRankIndex(targetSquare) - getRankIndex(from);
+  const absFileDelta = Math.abs(fileDelta);
+  const absRankDelta = Math.abs(rankDelta);
+  const isDiagonal = absFileDelta === absRankDelta && absFileDelta > 0;
+  const isOrthogonal = (fileDelta === 0 && rankDelta !== 0) || (rankDelta === 0 && fileDelta !== 0);
+
+  if (piece.pieceType === "pawn") {
+    const direction = piece.color === COLORS.WHITE ? 1 : -1;
+    return rankDelta === direction && absFileDelta === 1;
+  }
+
+  if (piece.pieceType === "knight") {
+    return (
+      (absFileDelta === 1 && absRankDelta === 2) ||
+      (absFileDelta === 2 && absRankDelta === 1) ||
+      (hasActivePowerup(owner, "bishopKnights") && isDiagonal && isLineClear(board, from, targetSquare))
+    );
+  }
+
+  if (piece.pieceType === "bishop") {
+    return isDiagonal && isLineClear(board, from, targetSquare);
+  }
+
+  if (piece.pieceType === "rook") {
+    return (
+      (isOrthogonal && isLineClear(board, from, targetSquare)) ||
+      (hasActivePowerup(owner, "queenRooks") && isDiagonal && isLineClear(board, from, targetSquare))
+    );
+  }
+
+  if (piece.pieceType === "queen") {
+    return (isDiagonal || isOrthogonal) && isLineClear(board, from, targetSquare);
+  }
+
+  if (piece.pieceType === "king") {
+    return Math.max(absFileDelta, absRankDelta) === 1;
+  }
+
+  return false;
+}
+
+function isSquareAttackedByColor(match, board, square, attackingColor) {
+  for (const [from, piece] of board.entries()) {
+    if (piece.color === attackingColor && pieceAttacksSquare(match, board, from, square)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isKingInCheck(match, fen, color) {
+  const { board } = parseFenState(fen);
+  let kingSquare = null;
+
+  for (const [square, piece] of board.entries()) {
+    if (piece.color === color && piece.pieceType === "king") {
+      kingSquare = square;
+      break;
+    }
+  }
+
+  if (!kingSquare) {
+    return true;
+  }
+
+  return isSquareAttackedByColor(match, board, kingSquare, otherColor(color));
+}
+
+function isExtraMovePattern(player, board, from, to) {
+  if (!isSquare(from) || !isSquare(to) || from === to) {
+    return false;
+  }
+
+  const piece = board.get(from);
+  const target = board.get(to);
+  if (!piece || piece.color !== player.color || target?.color === player.color || target?.pieceType === "king") {
+    return false;
+  }
+
+  const fileDelta = getFileIndex(to) - getFileIndex(from);
+  const rankDelta = getRankIndex(to) - getRankIndex(from);
+  const absFileDelta = Math.abs(fileDelta);
+  const absRankDelta = Math.abs(rankDelta);
+  const isDiagonal = absFileDelta === absRankDelta && absFileDelta > 0;
+
+  if (piece.pieceType === "pawn" && hasPowerup(player, "doubleStepPawns")) {
+    const direction = player.color === COLORS.WHITE ? 1 : -1;
+    const jumpedSquare = makeSquare(getFileIndex(from), getRankIndex(from) + direction);
+    return fileDelta === 0 && rankDelta === direction * 2 && jumpedSquare && !board.has(jumpedSquare) && !target;
+  }
+
+  if (piece.pieceType === "knight" && hasActivePowerup(player, "bishopKnights")) {
+    return isDiagonal && isLineClear(board, from, to);
+  }
+
+  if (piece.pieceType === "rook" && hasActivePowerup(player, "queenRooks")) {
+    return isDiagonal && isLineClear(board, from, to);
+  }
+
+  return false;
+}
+
+function promotionPieceType(promotion) {
+  if (!PROMOTION_PIECES.has(promotion)) {
+    return null;
+  }
+  return PIECE_FROM_FEN[promotion];
+}
+
+function getOpponentMineOwner(match, player, square) {
+  const opponent = getOpponent(match, player.userId);
+  return opponent?.blockedSquares.includes(square) ? opponent : null;
+}
+
+function removeMine(player, square) {
+  player.blockedSquares = player.blockedSquares.filter((blockedSquare) => blockedSquare !== square);
+}
+
+function applyMineToState(match, player, state, square, { consumeMine = false } = {}) {
+  const mineOwner = getOpponentMineOwner(match, player, square);
+  const piece = state.board.get(square);
+  if (!mineOwner || !piece || piece.color !== player.color) {
+    return null;
+  }
+
+  state.board.delete(square);
+  if (consumeMine) {
+    removeMine(mineOwner, square);
+  }
+
+  return {
+    square,
+    pieceType: piece.pieceType,
+    color: piece.color,
+    ownerUserId: mineOwner.userId
+  };
+}
+
+function applyMineToFen(match, player, fen, square, { consumeMine = false } = {}) {
+  const state = parseFenState(fen);
+  const mineTriggered = applyMineToState(match, player, state, square, { consumeMine });
+  if (!mineTriggered) {
+    return {
+      fen,
+      mineTriggered: null
+    };
+  }
+
+  return {
+    fen: buildFenFromState(state.board, {
+      turn: state.turn,
+      halfmove: 0,
+      fullmove: state.fullmove
+    }),
+    mineTriggered
+  };
+}
+
+function formatMineSan(san, mineTriggered) {
+  return mineTriggered ? `${san.replace(/[+#]$/, "")} (mine)` : san;
+}
+
+function formatCustomSan(match, player, beforePiece, from, to, capturedPiece, promotedType, fenAfter, mineTriggered) {
+  const capture = Boolean(capturedPiece);
+  let san = "";
+
+  if (beforePiece.pieceType === "pawn") {
+    san = capture ? `${from[0]}x${to}` : to;
+  } else {
+    san = `${PIECE_SAN[beforePiece.pieceType]}${capture ? "x" : ""}${to}`;
+  }
+
+  if (promotedType) {
+    san += `=${PIECE_SAN[promotedType]}`;
+  }
+
+  const opponentColor = otherColor(player.color);
+  if (isKingInCheck(match, fenAfter, opponentColor)) {
+    san += hasAnyLegalMove(match, opponentColor, fenAfter) ? "+" : "#";
+  }
+
+  return formatMineSan(san, mineTriggered);
+}
+
+function applyBoardMove(match, player, fen, { from, to, promotion = "q" }, { annotate = true, consumeMine = false } = {}) {
+  const state = parseFenState(fen);
+  const piece = state.board.get(from);
+  const capturedPiece = state.board.get(to) ?? null;
+  const finalRank = player.color === COLORS.WHITE ? 8 : 1;
+  let promotedType = null;
+
+  assertOrThrow(piece, 400, "No piece found on the source square.");
+  assertOrThrow(piece.color === player.color, 400, "You can only move your own pieces.");
+
+  if (piece.pieceType === "pawn" && getRankIndex(to) === finalRank) {
+    promotedType = promotionPieceType(promotion);
+    assertOrThrow(Boolean(promotedType), 400, "Invalid promotion piece.");
+  }
+
+  state.board.delete(from);
+  state.board.set(to, {
+    ...piece,
+    pieceType: promotedType ?? piece.pieceType
+  });
+  const mineTriggered = applyMineToState(match, player, state, to, { consumeMine });
+
+  const nextTurn = colorToTurn(otherColor(player.color));
+  const isPawnMove = piece.pieceType === "pawn";
+  const halfmove = isPawnMove || capturedPiece || mineTriggered ? 0 : state.halfmove + 1;
+  const fullmove = player.color === COLORS.BLACK ? state.fullmove + 1 : state.fullmove;
+  const fenAfter = buildFenFromState(state.board, {
+    turn: nextTurn,
+    halfmove,
+    fullmove
+  });
+
+  return {
+    fen: fenAfter,
+    mineTriggered,
+    san: annotate
+      ? formatCustomSan(match, player, piece, from, to, capturedPiece, promotedType, fenAfter, mineTriggered)
+      : null
+  };
+}
+
+function legalMoveMapForPlayer(match, player, fen) {
+  const state = parseFenState(fen);
+  if (state.turn !== colorToTurn(player.color)) {
+    return {};
+  }
+
+  const chess = new Chess(fen);
+  const movesBySquare = {};
+
+  for (const square of ALL_SQUARES) {
+    const piece = state.board.get(square);
+    if (!piece || piece.color !== player.color) {
+      continue;
+    }
+
+    const targets = new Set();
+
+    for (const move of chess.moves({ square, verbose: true })) {
+      const afterMove = new Chess(fen);
+      afterMove.move({
+        from: move.from,
+        to: move.to,
+        promotion: move.promotion ?? "q"
+      });
+      const mined = applyMineToFen(match, player, afterMove.fen(), move.to);
+      if (mined.mineTriggered?.pieceType === "king" || !isKingInCheck(match, mined.fen, player.color)) {
+        targets.add(move.to);
+      }
+    }
+
+    for (const target of ALL_SQUARES) {
+      if (!isExtraMovePattern(player, state.board, square, target)) {
+        continue;
+      }
+
+      const applied = applyBoardMove(match, player, fen, { from: square, to: target }, { annotate: false });
+      if (applied.mineTriggered?.pieceType === "king" || !isKingInCheck(match, applied.fen, player.color)) {
+        targets.add(target);
+      }
+    }
+
+    if (targets.size > 0) {
+      movesBySquare[square] = [...targets].sort();
+    }
+  }
+
+  return movesBySquare;
+}
+
+function hasAnyLegalMove(match, color, fen) {
+  const player = getPlayerByColor(match, color);
+  return player ? Object.keys(legalMoveMapForPlayer(match, player, fen)).length > 0 : false;
+}
+
+function getMoveOutcome(match, movedPlayer, fenAfter) {
+  const nextColor = otherColor(movedPlayer.color);
+  const nextHasLegalMove = hasAnyLegalMove(match, nextColor, fenAfter);
+
+  if (!nextHasLegalMove) {
+    return {
+      reason: isKingInCheck(match, fenAfter, nextColor) ? "checkmate" : "stalemate",
+      winnerId: isKingInCheck(match, fenAfter, nextColor) ? movedPlayer.userId : null
+    };
+  }
+
+  const chess = new Chess(fenAfter);
+  if (chess.isDrawByFiftyMoves()) {
+    return {
+      reason: "draw",
+      winnerId: null
+    };
+  }
+
+  if (
+    !match.players.some((player) =>
+      ["doubleStepPawns", "bishopKnights", "queenRooks"].some((powerupId) => player.powerups.includes(powerupId))
+    ) &&
+    chess.isInsufficientMaterial()
+  ) {
+    return {
+      reason: "draw",
+      winnerId: null
+    };
+  }
+
+  return null;
+}
+
+function canMineSquare(player, square) {
+  const rank = getRank(square);
+  if (player.color === COLORS.WHITE) {
+    return rank < 7;
+  }
+  return rank > 2;
 }
 
 export class GameManager {
@@ -319,7 +793,53 @@ export class GameManager {
       "No remaining pieces of that type are available."
     );
 
+    const mineOwner = getOpponentMineOwner(match, player, square);
+    if (mineOwner) {
+      player.inventory[pieceType] -= 1;
+      removeMine(mineOwner, square);
+      this.notify(match);
+      return match;
+    }
+
     player.placedPieces.push({ pieceType, square });
+    this.notify(match);
+    return match;
+  }
+
+  blockSquare(matchId, userId, { square }) {
+    const match = this.getMatch(matchId);
+    assertOrThrow(match.phase === PHASES.PLACEMENT, 409, "Squares can only be blocked during placement.");
+    assertOrThrow(isSquare(square), 400, "Invalid board square.");
+
+    const player = getPlayer(match, userId);
+    const limit = countPowerup(player, "squareBlockade") * BLOCKED_SQUARES_PER_POWERUP;
+    assertOrThrow(limit > 0, 400, "You do not own Minefield.");
+    assertOrThrow(player.blockedSquares.length < limit, 400, "Mine limit reached.");
+    assertOrThrow(!player.blockedSquares.includes(square), 400, "Square is already mined.");
+    assertOrThrow(canMineSquare(player, square), 400, "Mines cannot be placed in the opponent's back two ranks.");
+    assertOrThrow(
+      !match.players.some((candidate) => candidate.placedPieces.some((piece) => piece.square === square)),
+      400,
+      "Cannot mine an occupied square."
+    );
+
+    player.ready = false;
+    player.blockedSquares.push(square);
+    this.notify(match);
+    return match;
+  }
+
+  unblockSquare(matchId, userId, square) {
+    const match = this.getMatch(matchId);
+    assertOrThrow(match.phase === PHASES.PLACEMENT, 409, "Squares can only be unblocked during placement.");
+    assertOrThrow(isSquare(square), 400, "Invalid board square.");
+
+    const player = getPlayer(match, userId);
+    const before = player.blockedSquares.length;
+    player.blockedSquares = player.blockedSquares.filter((blockedSquare) => blockedSquare !== square);
+    assertOrThrow(before !== player.blockedSquares.length, 404, "No owned mine found on that square.");
+
+    player.ready = false;
     this.notify(match);
     return match;
   }
@@ -365,17 +885,7 @@ export class GameManager {
     throw new AppError(409, "Ready is only valid during shop or placement.");
   }
 
-  submitMove(matchId, userId, { from, to, promotion = "q" }) {
-    const match = this.getMatch(matchId);
-    assertOrThrow(match.phase === PHASES.CHESS, 409, "Moves are only allowed during the chess phase.");
-    assertOrThrow(isSquare(from) && isSquare(to), 400, "Move squares must be valid chess coordinates.");
-
-    const player = getPlayer(match, userId);
-    const chess = new Chess(match.chess.fen);
-    const activeColor = chess.turn() === "w" ? COLORS.WHITE : COLORS.BLACK;
-    assertOrThrow(player.color === activeColor, 409, "It is not your turn.");
-
-    // Tick the active player's clock
+  tickActiveClock(match, player) {
     const now = Date.now();
     if (player.clockLastUpdatedAt) {
       const elapsed = now - new Date(player.clockLastUpdatedAt).getTime();
@@ -384,17 +894,51 @@ export class GameManager {
     player.clockLastUpdatedAt = null;
 
     if (player.clockMs <= 0) {
-      const opponent = getOpponent(match, userId);
+      const opponent = getOpponent(match, player.userId);
       this.finishMatch(match, opponent?.userId ?? null, "timeout");
+      return false;
+    }
+
+    return true;
+  }
+
+  applyMoveTimeRecovery(player) {
+    if (player.powerups.includes("moveTimeRecover")) {
+      player.clockMs += CHESS_TIME_RECOVER_MS;
+    }
+  }
+
+  finishChessTurn(match, player, fenAfter) {
+    clearTurnPowerups(player);
+    const outcome = getMoveOutcome(match, player, fenAfter);
+    if (outcome) {
+      this.finishMatch(match, outcome.winnerId, outcome.reason);
+      return;
+    }
+
+    const opponent = getOpponent(match, player.userId);
+    if (opponent) {
+      opponent.clockLastUpdatedAt = nowIso();
+    }
+  }
+
+  submitMove(matchId, userId, { from, to, promotion = "q" }) {
+    const match = this.getMatch(matchId);
+    assertOrThrow(match.phase === PHASES.CHESS, 409, "Moves are only allowed during the chess phase.");
+    assertOrThrow(isSquare(from) && isSquare(to), 400, "Move squares must be valid chess coordinates.");
+
+    const player = getPlayer(match, userId);
+    const chess = new Chess(match.chess.fen);
+    const activeColor = turnToColor(chess.turn());
+    assertOrThrow(player.color === activeColor, 409, "It is not your turn.");
+
+    if (!this.tickActiveClock(match, player)) {
       this.notify(match);
       return match;
     }
 
-    // Apply moveTimeRecover powerup
-    if (player.powerups.includes("moveTimeRecover")) {
-      player.clockMs += CHESS_TIME_RECOVER_MS;
-    }
-
+    const startingFen = match.chess.fen;
+    const startingState = parseFenState(startingFen);
     let move;
     try {
       move = chess.move({ from, to, promotion });
@@ -402,34 +946,128 @@ export class GameManager {
       move = null;
     }
 
-    assertOrThrow(Boolean(move), 400, "Illegal chess move.");
+    let fenAfter;
+    let san;
+    let mineTriggered = null;
+    let moveKind = "standard";
 
-    match.chess.fen = chess.fen();
+    if (move) {
+      const mined = applyMineToFen(match, player, chess.fen(), to, { consumeMine: true });
+      fenAfter = mined.fen;
+      mineTriggered = mined.mineTriggered;
+      san = formatMineSan(move.san, mineTriggered);
+      assertOrThrow(
+        mineTriggered?.pieceType === "king" || !isKingInCheck(match, fenAfter, player.color),
+        400,
+        "Illegal chess move."
+      );
+    } else {
+      assertOrThrow(isExtraMovePattern(player, startingState.board, from, to), 400, "Illegal chess move.");
+      const applied = applyBoardMove(match, player, startingFen, { from, to, promotion }, { consumeMine: true });
+      assertOrThrow(
+        applied.mineTriggered?.pieceType === "king" || !isKingInCheck(match, applied.fen, player.color),
+        400,
+        "Illegal chess move."
+      );
+      fenAfter = applied.fen;
+      san = applied.san;
+      mineTriggered = applied.mineTriggered;
+      moveKind = "powerup";
+    }
+
+    this.applyMoveTimeRecovery(player);
+    match.chess.fen = fenAfter;
     match.chess.moves.push({
       userId,
-      san: move.san,
+      san,
       from,
       to,
       promotion,
+      kind: moveKind,
+      mineTriggered,
       fen: match.chess.fen,
       createdAt: nowIso()
     });
 
-    if (chess.isGameOver()) {
-      const reason = getGameOverReason(chess);
-      let winnerId = null;
-      if (reason === "checkmate") {
-        winnerId = player.userId;
-      }
-      this.finishMatch(match, winnerId, reason);
-    } else {
-      // Start the opponent's clock
+    if (mineTriggered?.pieceType === "king") {
+      clearTurnPowerups(player);
       const opponent = getOpponent(match, userId);
-      if (opponent) {
-        opponent.clockLastUpdatedAt = nowIso();
-      }
+      this.finishMatch(match, opponent?.userId ?? null, "mine");
+      this.notify(match);
+      return match;
     }
 
+    this.finishChessTurn(match, player, fenAfter);
+    this.notify(match);
+    return match;
+  }
+
+  swapPieces(matchId, userId, { from, to }) {
+    const match = this.getMatch(matchId);
+    assertOrThrow(match.phase === PHASES.CHESS, 409, "Piece swaps are only available during chess.");
+    assertOrThrow(isSquare(from) && isSquare(to), 400, "Swap squares must be valid chess coordinates.");
+    assertOrThrow(from !== to, 400, "Choose two different pieces to swap.");
+
+    const player = getPlayer(match, userId);
+    const item = POWERUP_SHOP.pieceSwap;
+    assertOrThrow(item, 400, "Unknown powerup.");
+    assertOrThrow(player.powerups.includes("pieceSwap"), 400, "You do not own Tactical Swap.");
+    assertOrThrow(!player.usedPowerups.includes("pieceSwap"), 409, "You have already used this powerup.");
+
+    const state = parseFenState(match.chess.fen);
+    assertOrThrow(state.turn === colorToTurn(player.color), 409, "It is not your turn.");
+
+    if (!this.tickActiveClock(match, player)) {
+      this.notify(match);
+      return match;
+    }
+
+    const firstPiece = state.board.get(from);
+    const secondPiece = state.board.get(to);
+    assertOrThrow(firstPiece?.color === player.color && secondPiece?.color === player.color, 400, "Choose two of your own pieces.");
+
+    state.board.set(from, secondPiece);
+    state.board.set(to, firstPiece);
+    const mineTriggers = [
+      applyMineToState(match, player, state, from, { consumeMine: true }),
+      applyMineToState(match, player, state, to, { consumeMine: true })
+    ].filter(Boolean);
+
+    const fenAfter = buildFenFromState(state.board, {
+      turn: colorToTurn(otherColor(player.color)),
+      halfmove: firstPiece.pieceType === "pawn" || secondPiece.pieceType === "pawn" || mineTriggers.length > 0 ? 0 : state.halfmove + 1,
+      fullmove: player.color === COLORS.BLACK ? state.fullmove + 1 : state.fullmove
+    });
+    assertOrThrow(
+      mineTriggers.some((mine) => mine.pieceType === "king") || !isKingInCheck(match, fenAfter, player.color),
+      400,
+      "Swap would leave your king in check."
+    );
+
+    player.usedPowerups.push("pieceSwap");
+    this.applyMoveTimeRecovery(player);
+    match.chess.fen = fenAfter;
+    match.chess.moves.push({
+      userId,
+      san: `Swap ${PIECE_SAN[firstPiece.pieceType] || "P"}${from}<->${PIECE_SAN[secondPiece.pieceType] || "P"}${to}`,
+      from,
+      to,
+      powerupId: "pieceSwap",
+      kind: "powerup",
+      mineTriggered: mineTriggers[0] ?? null,
+      fen: match.chess.fen,
+      createdAt: nowIso()
+    });
+
+    if (mineTriggers.some((mine) => mine.pieceType === "king")) {
+      clearTurnPowerups(player);
+      const opponent = getOpponent(match, userId);
+      this.finishMatch(match, opponent?.userId ?? null, "mine");
+      this.notify(match);
+      return match;
+    }
+
+    this.finishChessTurn(match, player, fenAfter);
     this.notify(match);
     return match;
   }
@@ -455,8 +1093,20 @@ export class GameManager {
     const item = POWERUP_SHOP[powerupId];
     assertOrThrow(item, 400, "Unknown powerup.");
     assertOrThrow(item.activatable, 400, "This powerup is not an active-use item.");
+    assertOrThrow(powerupId !== "pieceSwap", 400, "Tactical Swap requires two selected pieces.");
     assertOrThrow(player.powerups.includes(powerupId), 400, "You do not own this powerup.");
     assertOrThrow(!player.usedPowerups.includes(powerupId), 409, "You have already used this powerup.");
+
+    if (TURN_POWERUPS.has(powerupId)) {
+      const activeColor = turnToColor(new Chess(match.chess.fen).turn());
+      assertOrThrow(player.color === activeColor, 409, "You can only activate this powerup on your turn.");
+      assertOrThrow(!player.activePowerups.includes(powerupId), 409, "This powerup is already active.");
+
+      player.usedPowerups.push(powerupId);
+      player.activePowerups.push(powerupId);
+      this.notify(match);
+      return match;
+    }
 
     if (powerupId === "timeSiphon") {
       const opponent = getOpponent(match, userId);
@@ -548,6 +1198,7 @@ export class GameManager {
     // Apply clock powerups
     for (const player of match.players) {
       player.ready = false;
+      player.activePowerups = [];
       let clock = CHESS_CLOCK_MS;
 
       if (player.powerups.includes("timeBonus")) {
@@ -617,6 +1268,7 @@ export class GameManager {
   }
 
   serialize(match, viewerUserId = null) {
+    const viewer = viewerUserId ? match.players.find((player) => player.userId === viewerUserId) : null;
     return {
       id: match.id,
       status: match.status,
@@ -633,6 +1285,10 @@ export class GameManager {
         return serialized;
       }),
       chess: match.chess,
+      legalMoves:
+        viewer && match.phase === PHASES.CHESS && match.chess
+          ? legalMoveMapForPlayer(match, viewer, match.chess.fen)
+          : {},
       winnerId: match.winnerId,
       resultReason: match.resultReason,
       completedAt: match.completedAt,
