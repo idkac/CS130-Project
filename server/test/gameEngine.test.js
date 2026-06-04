@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PHASES } from "../src/config.js";
+import { PHASES, CHESS_CLOCK_MS, CHESS_TIME_BONUS_MS, CHESS_TIME_PENALTY_MS, CHESS_TIME_RECOVER_MS } from "../src/config.js";
 import { GameManager, testOnly } from "../src/gameEngine.js";
 
 const alice = { id: "alice", username: "alice" };
@@ -303,4 +303,168 @@ test("usePowerup rejects outside chess phase", () => {
     () => manager.usePowerup(match.id, alice.id, { powerupId: "timeSiphon" }),
     { message: "Active powerups can only be used during the chess phase." }
   );
+});
+
+test("resign ends the match in favor of the opponent", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  manager.resign(match.id, alice.id);
+
+  assert.equal(match.phase, PHASES.COMPLETE);
+  assert.equal(match.winnerId, bob.id);
+  assert.equal(match.resultReason, "resignation");
+});
+
+test("ready() rejects during placement if no king is placed", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToPlacement(manager, match);
+
+  match.players[0].placedPieces = [];
+
+  assert.throws(
+    () => manager.ready(match.id, alice.id),
+    { message: "Place exactly one king before readying." }
+  );
+});
+
+test("click rate limiter rejects more than 15 clicks per second", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+
+  for (let i = 0; i < 15; i++) {
+    manager.registerClick(match.id, alice.id);
+  }
+
+  assert.throws(
+    () => manager.registerClick(match.id, alice.id),
+    { message: "Click rate exceeded the server fairness limit." }
+  );
+});
+
+test("removePiece removes a placed piece and resets ready", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToPlacement(manager, match);
+
+  assert.ok(match.players[0].placedPieces.some((p) => p.square === "e1"));
+  manager.removePiece(match.id, alice.id, "e1");
+
+  assert.equal(match.players[0].placedPieces.some((p) => p.square === "e1"), false);
+  assert.equal(match.players[0].ready, false);
+});
+
+test("timeBonus and timePenalty adjust chess clocks at match start", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+
+  match.phaseEndsAt = new Date(Date.now() - 1).toISOString();
+  manager.advanceExpiredMatches();
+
+  match.players[0].pawnCount = 200;
+  match.players[1].pawnCount = 200;
+  match.players[0].powerups.push("timeBonus");
+  match.players[1].powerups.push("timePenalty");
+
+  manager.ready(match.id, alice.id);
+  manager.ready(match.id, bob.id);
+  manager.ready(match.id, alice.id);
+  manager.ready(match.id, bob.id);
+
+  // alice: base + timeBonus - timePenalty (from bob)
+  assert.equal(match.players[0].clockMs, CHESS_CLOCK_MS + CHESS_TIME_BONUS_MS - CHESS_TIME_PENALTY_MS);
+  // bob: base only (alice has no timePenalty)
+  assert.equal(match.players[1].clockMs, CHESS_CLOCK_MS);
+});
+
+test("moveTimeRecover adds time to the clock after each move", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("moveTimeRecover");
+  match.chess.fen = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
+  match.players[0].clockLastUpdatedAt = null;
+
+  const clockBefore = match.players[0].clockMs;
+  manager.submitMove(match.id, alice.id, { from: "e2", to: "e4" });
+
+  assert.equal(match.players[0].clockMs, clockBefore + CHESS_TIME_RECOVER_MS);
+});
+
+test("pawn promotion uses the requested piece type", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // White pawn on e7, kings in corners
+  match.chess.fen = "7k/4P3/8/8/8/8/8/K7 w - - 0 1";
+  match.players[0].clockLastUpdatedAt = null;
+
+  manager.submitMove(match.id, alice.id, { from: "e7", to: "e8", promotion: "r" });
+
+  // White rook (R) should appear on e8
+  assert.match(match.chess.fen, /^4R2k\//);
+  assert.match(match.chess.moves.at(-1).san, /^e8=R/);
+});
+
+test("checkmate ends the match in favor of the attacking player", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // Black to move: Ra3-a2 delivers back-rank checkmate with two rooks
+  match.chess.fen = "k7/8/8/8/8/r7/1r6/K7 b - - 0 1";
+
+  manager.submitMove(match.id, bob.id, { from: "a3", to: "a2" });
+
+  assert.equal(match.phase, PHASES.COMPLETE);
+  assert.equal(match.winnerId, bob.id);
+  assert.equal(match.resultReason, "checkmate");
+});
+
+test("serialize hides opponent placedPieces during placement phase", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToPlacement(manager, match);
+
+  const aliceView = manager.serialize(match, alice.id);
+  const bobView = manager.serialize(match, bob.id);
+
+  const bobSeenByAlice = aliceView.players.find((p) => p.userId === bob.id);
+  const aliceSeenByBob = bobView.players.find((p) => p.userId === alice.id);
+
+  assert.deepEqual(bobSeenByAlice.placedPieces, [], "Alice should not see Bob's pieces");
+  assert.deepEqual(aliceSeenByBob.placedPieces, [], "Bob should not see Alice's pieces");
+
+  const aliceSeenBySelf = aliceView.players.find((p) => p.userId === alice.id);
+  assert.ok(aliceSeenBySelf.placedPieces.length > 0, "Alice can still see her own pieces");
+});
+
+test("serialize includes legalMoves for the viewer during chess", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.chess.fen = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
+
+  const aliceView = manager.serialize(match, alice.id);
+  const bobView = manager.serialize(match, bob.id);
+
+  // Alice (white) is to move — she should have legal moves
+  assert.ok(Object.keys(aliceView.legalMoves).length > 0, "Alice has legal moves on white's turn");
+  // Bob (black) is not to move — his legalMoves map is empty
+  assert.deepEqual(bobView.legalMoves, {});
 });
