@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PHASES, CHESS_CLOCK_MS, CHESS_TIME_BONUS_MS, CHESS_TIME_PENALTY_MS, CHESS_TIME_RECOVER_MS } from "../src/config.js";
+import { PHASES, CHESS_CLOCK_MS, CHESS_TIME_BONUS_MS, CHESS_TIME_PENALTY_MS, CHESS_TIME_RECOVER_MS, BLOCKED_SQUARES_PER_POWERUP } from "../src/config.js";
 import { GameManager, testOnly } from "../src/gameEngine.js";
 
 const alice = { id: "alice", username: "alice" };
@@ -467,4 +467,150 @@ test("serialize includes legalMoves for the viewer during chess", () => {
   assert.ok(Object.keys(aliceView.legalMoves).length > 0, "Alice has legal moves on white's turn");
   // Bob (black) is not to move — his legalMoves map is empty
   assert.deepEqual(bobView.legalMoves, {});
+});
+
+test("stalemate ends match as draw with no winner", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // White king d8, white rook c7, black king a8.
+  // White plays Kd8→c8: black king on a8 has no legal moves (a7 and b7 covered by rook,
+  // b8 covered by king) and is not in check → stalemate.
+  match.chess.fen = "k2K4/2R5/8/8/8/8/8/8 w - - 0 1";
+  manager.submitMove(match.id, alice.id, { from: "d8", to: "c8" });
+
+  assert.equal(match.phase, PHASES.COMPLETE);
+  assert.equal(match.winnerId, null);
+  assert.equal(match.resultReason, "stalemate");
+});
+
+test("advanceExpiredMatches times out player whose chess clock runs out", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // Drain alice's clock and backdate the last-updated timestamp
+  match.players[0].clockMs = 5000;
+  match.players[0].clockLastUpdatedAt = new Date(Date.now() - 10_000).toISOString();
+
+  manager.advanceExpiredMatches();
+
+  assert.equal(match.phase, PHASES.COMPLETE);
+  assert.equal(match.winnerId, bob.id);
+  assert.equal(match.resultReason, "timeout");
+});
+
+test("moving king onto opponent mine ends match by mine", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // Bob plants a mine on e2; alice's king walks onto it
+  match.players[1].blockedSquares.push("e2");
+  match.chess.fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1";
+
+  manager.submitMove(match.id, alice.id, { from: "e1", to: "e2" });
+
+  assert.equal(match.phase, PHASES.COMPLETE);
+  assert.equal(match.winnerId, bob.id);
+  assert.equal(match.resultReason, "mine");
+});
+
+test("blockSquare enforces per-powerup mine limit", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToPlacement(manager, match);
+
+  match.players[0].powerups.push("squareBlockade");
+  const limit = 1 * BLOCKED_SQUARES_PER_POWERUP; // 2 mines
+
+  // Place up to the limit — both should succeed
+  for (let i = 0; i < limit; i++) {
+    manager.blockSquare(match.id, alice.id, { square: `a${i + 3}` });
+  }
+  assert.equal(match.players[0].blockedSquares.length, limit);
+
+  // One more should be rejected
+  assert.throws(
+    () => manager.blockSquare(match.id, alice.id, { square: "a5" }),
+    /mine limit/i
+  );
+});
+
+test("unblockSquare removes an existing mine", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToPlacement(manager, match);
+
+  match.players[0].powerups.push("squareBlockade");
+  manager.blockSquare(match.id, alice.id, { square: "a3" });
+  assert.equal(match.players[0].blockedSquares.length, 1);
+
+  manager.unblockSquare(match.id, alice.id, "a3");
+  assert.deepEqual(match.players[0].blockedSquares, []);
+});
+
+test("turn powerup activation is rejected when it is not the player's turn", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  // It is white's (alice's) turn; give bob the powerup
+  match.players[1].powerups.push("bishopKnights");
+
+  assert.throws(
+    () => manager.usePowerup(match.id, bob.id, { powerupId: "bishopKnights" }),
+    /your turn/i
+  );
+});
+
+test("expandedDeployment allows non-pawn pieces on rank 3 for white", () => {
+  const withPowerup = { color: "white", powerups: ["expandedDeployment"], placedPieces: [] };
+  const withoutPowerup = { color: "white", powerups: [], placedPieces: [] };
+
+  assert.equal(testOnly.canPlaceOnSquare(withPowerup, "rook", "a3"), true);
+  assert.equal(testOnly.canPlaceOnSquare(withoutPowerup, "rook", "a3"), false);
+});
+
+test("joinMatchmaking is idempotent — rejoining returns the same match", () => {
+  const manager = new GameManager();
+  const first = manager.joinMatchmaking(alice);
+  const second = manager.joinMatchmaking(alice);
+
+  assert.equal(first.id, second.id);
+});
+
+test("opponent placedPieces are visible after chess phase begins", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  const aliceView = manager.serialize(match, alice.id);
+  const bobSeenByAlice = aliceView.players.find((p) => p.userId === bob.id);
+
+  assert.ok(bobSeenByAlice.placedPieces.length > 0, "Bob's placed pieces are visible once chess starts");
+});
+
+test("doubleStepPawns is blocked when the jumped square is occupied", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToChess(manager, match);
+
+  match.players[0].powerups.push("doubleStepPawns");
+  // Pawn at e3, blocker at e4 — e3→e5 requires jumping e4
+  match.chess.fen = "4k3/8/8/8/4P3/4P3/8/4K3 w - - 0 1";
+
+  assert.throws(
+    () => manager.submitMove(match.id, alice.id, { from: "e3", to: "e5" }),
+    { message: "Illegal chess move." }
+  );
 });
