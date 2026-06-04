@@ -748,7 +748,7 @@ export class GameManager {
     if (itemType === "piece") {
       const item = PIECE_SHOP[itemId];
       assertOrThrow(item, 400, "Unknown piece.");
-      assertOrThrow(countPurchasedPieces(player, itemId) < item.maxQuantity, 400, "Piece limit reached.");
+      assertOrThrow(countPurchasedPieces(player, itemId) < item.maxQuantity, 400, "Maximum quantity already purchased for this piece.");
       assertOrThrow(player.pawnCount >= item.cost, 400, "Not enough pawns.");
 
       player.pawnCount -= item.cost;
@@ -781,7 +781,7 @@ export class GameManager {
     const player = getPlayer(match, userId);
     player.ready = false;
 
-    assertOrThrow(canPlaceOnSquare(player, pieceType, square), 400, "Piece cannot be placed on that square.");
+    assertOrThrow(canPlaceOnSquare(player, pieceType, square), 400, "That square is outside your deployment zone.");
     assertOrThrow(
       !match.players.some((candidate) => candidate.placedPieces.some((piece) => piece.square === square)),
       400,
@@ -790,7 +790,7 @@ export class GameManager {
     assertOrThrow(
       pieceCount(player.placedPieces, pieceType) < (player.inventory[pieceType] ?? 0),
       400,
-      "No remaining pieces of that type are available."
+      "No remaining inventory for that piece type."
     );
 
     const mineOwner = getOpponentMineOwner(match, player, square);
