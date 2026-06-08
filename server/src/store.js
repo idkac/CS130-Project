@@ -116,5 +116,33 @@ export class JsonStore {
       matches
     };
   }
+
+  async getMovesForMatch(matchId, userId) {
+    const db = await this.load();
+
+    const match = db.matches.find((candidate) => candidate.id === matchId);
+    if (!match || !match.playerIds.includes(userId)) {
+      return null;
+    }
+
+    return (match.moves ?? []).map((move, index) =>
+      toStoredMove(matchId, move, index)
+    );
+  }
 }
 
+function toStoredMove(matchId, move, index) {
+  return {
+    matchId,
+    userId: move.userId,
+    moveNumber: index + 1,
+    from: move.from,
+    to: move.to,
+    san: move.san ?? null,
+    promotion: move.promotion ?? null,
+    kind: move.kind ?? "standard",
+    mineTriggered: move.mineTriggered ?? null,
+    fenAfter: move.fen,
+    createdAt: move.createdAt
+  };
+}

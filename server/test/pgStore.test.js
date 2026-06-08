@@ -5,8 +5,6 @@ import { PgStore } from '../src/pgStore.js';
 import crypto from 'node:crypto';
 
 const store = new PgStore(process.env.TEST_DATABASE_URL);
-
-// Wipe tables before each run
 test.before(async () => {
   await store.load();
   await store.pool.query('TRUNCATE users, matches RESTART IDENTITY CASCADE');
@@ -20,6 +18,39 @@ function uniqueUser(overrides = {}) {
     passwordHash: 'salt:hash',
     wins: 0,
     losses: 0,
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function completedMatch(overrides = {}) {
+  const timestamp = new Date().toISOString();
+
+  return {
+    id: crypto.randomUUID(),
+    playerIds: [],
+    players: [],
+    winnerId: null,
+    resultReason: 'draw',
+    moveCount: 0,
+    finalFen: '',
+    moves: [],
+    createdAt: timestamp,
+    completedAt: timestamp,
+    ...overrides,
+  };
+}
+
+function recordedMove(overrides = {}) {
+  return {
+    userId: '',
+    from: '',
+    to: '',
+    san: null,
+    promotion: null,
+    kind: 'standard',
+    mineTriggered: null,
+    fen: '',
     createdAt: new Date().toISOString(),
     ...overrides,
   };
@@ -61,17 +92,14 @@ test('recordCompletedMatch saves match and updates win/loss records', async () =
   await store.createUser(p2);
 
   const matchId = crypto.randomUUID();
-  await store.recordCompletedMatch({
+  await store.recordCompletedMatch(completedMatch({
     id: matchId,
     playerIds: [p1.id, p2.id],
-    players: [],
     winnerId: p1.id,
     resultReason: 'checkmate',
     moveCount: 10,
     finalFen: '4k3/8/8/8/8/8/8/4K3 w - - 0 1',
-    createdAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-  });
+  }));
 
   const winner = await store.getUserById(p1.id);
   const loser  = await store.getUserById(p2.id);
@@ -85,19 +113,106 @@ test('getHistoryForUser returns only that user\'s matches', async () => {
   await store.createUser(p1);
   await store.createUser(p2);
 
-  await store.recordCompletedMatch({
-    id: crypto.randomUUID(),
+  await store.recordCompletedMatch(completedMatch({
     playerIds: [p1.id, p2.id],
-    players: [],
     winnerId: p1.id,
     resultReason: 'resignation',
     moveCount: 3,
     finalFen: '',
-    createdAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-  });
+  }));
 
   const { matches } = await store.getHistoryForUser(p1.id);
   assert.ok(matches.length >= 1);
   assert.ok(matches.every(m => m.playerIds.includes(p1.id)));
+});
+
+test('recordCompletedMatch persists moves', async () => {
+  const p1 = uniqueUser();
+  const p2 = uniqueUser();
+  await store.createUser(p1);
+  await store.createUser(p2);
+
+  const matchId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await store.recordCompletedMatch(completedMatch({
+    id: matchId,
+    playerIds: [p1.id, p2.id],
+    winnerId: p1.id,
+    resultReason: 'checkmate',
+    moveCount: 2,
+    finalFen: '4k3/8/8/8/8/8/8/4K3 w - - 0 1',
+    moves: [
+      recordedMove({
+        userId: p1.id,
+        from: 'e2',
+        to: 'e4',
+        san: 'e4',
+        fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
+        createdAt: now,
+      }),
+      recordedMove({
+        userId: p2.id,
+        from: 'e7',
+        to: 'e5',
+        san: 'e5',
+        fen: 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2',
+        createdAt: now,
+      }),
+    ],
+    createdAt: now,
+    completedAt: now,
+  }));
+
+  const moves = await store.getMovesForMatch(matchId, p1.id);
+  assert.equal(moves.length, 2);
+  assert.equal(moves[0].moveNumber, 1);
+  assert.equal(moves[0].from, 'e2');
+  assert.equal(moves[0].san, 'e4');
+  assert.equal(moves[1].moveNumber, 2);
+  assert.equal(moves[1].from, 'e7');
+  assert.equal(moves[1].san, 'e5');
+});
+
+test('getMovesForMatch returns null for non-participant', async () => {
+  const p1 = uniqueUser();
+  const p2 = uniqueUser();
+  const outsider = uniqueUser();
+  await store.createUser(p1);
+  await store.createUser(p2);
+  await store.createUser(outsider);
+
+  const matchId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await store.recordCompletedMatch(completedMatch({
+    id: matchId,
+    playerIds: [p1.id, p2.id],
+    winnerId: null,
+    resultReason: 'stalemate',
+    createdAt: now,
+    completedAt: now,
+  }));
+
+  const result = await store.getMovesForMatch(matchId, outsider.id);
+  assert.equal(result, null);
+});
+
+test('getMovesForMatch returns empty array for matches with no recorded moves', async () => {
+  const p1 = uniqueUser();
+  const p2 = uniqueUser();
+  await store.createUser(p1);
+  await store.createUser(p2);
+
+  const matchId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await store.recordCompletedMatch(completedMatch({
+    id: matchId,
+    playerIds: [p1.id, p2.id],
+    winnerId: null,
+    resultReason: 'draw',
+    createdAt: now,
+    completedAt: now,
+  }));
+
+  const moves = await store.getMovesForMatch(matchId, p1.id);
+  assert.deepEqual(moves, []);
 });

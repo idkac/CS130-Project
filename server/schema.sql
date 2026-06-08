@@ -18,3 +18,19 @@ CREATE TABLE IF NOT EXISTS matches (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at  TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS moves (
+  id            TEXT PRIMARY KEY,
+  match_id      TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  user_id       TEXT NOT NULL,
+  move_number   INTEGER NOT NULL,
+  from_square   TEXT NOT NULL,
+  to_square     TEXT NOT NULL,
+  san           TEXT,
+  promotion     TEXT,
+  kind          TEXT NOT NULL DEFAULT 'standard',
+  mine_triggered JSONB,
+  fen_after     TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL,
+  UNIQUE (match_id, move_number)
+);

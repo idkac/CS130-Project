@@ -1262,6 +1262,7 @@ export class GameManager {
       resultReason: match.resultReason,
       moveCount: match.chess?.moves.length ?? 0,
       finalFen: match.chess?.fen ?? null,
+      moves: match.chess?.moves ?? [],
       createdAt: match.createdAt,
       completedAt: match.completedAt
     };

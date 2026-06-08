@@ -18,7 +18,7 @@ import {
 } from "./auth.js";
 import { AppError } from "./errors.js";
 import { GameManager } from "./gameEngine.js";
-//import { JsonStore } from "./store.js";
+import { JsonStore } from "./store.js";
 import { PgStore } from "./pgStore.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../../.env", import.meta.url)), quiet: true });
@@ -40,8 +40,7 @@ const io = new SocketServer(server, {
   }
 });
 
-//const store = new JsonStore();
-const store = new PgStore();
+const store = createStore();
 await store.load();
 
 const manager = new GameManager({
@@ -96,6 +95,10 @@ const swapPiecesSchema = z.object({
 const usePowerupSchema = z.object({
   powerupId: z.string().min(1)
 });
+
+function createStore() {
+  return process.env.DATABASE_URL ? new PgStore() : new JsonStore();
+}
 
 function asyncHandler(handler) {
   return async (req, res, next) => {
@@ -368,6 +371,18 @@ app.get(
       user: sanitizeUser(history.user),
       matches: history.matches
     });
+  })
+);
+
+app.get(
+  "/api/matches/:matchId/moves",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const moves = await store.getMovesForMatch(req.params.matchId, req.auth.user.id);
+    if (!moves) {
+      throw new AppError(403, "Match not found or you are not a participant.");
+    }
+    res.json({ moves });
   })
 );
 

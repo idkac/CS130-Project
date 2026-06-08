@@ -1,4 +1,4 @@
-// server/src/pgStore.js
+import { randomUUID } from "node:crypto";
 import pg from 'pg';
 import { normalizeUsername } from './auth.js';
 
@@ -9,7 +9,6 @@ export class PgStore {
     this.pool = new Pool({ connectionString });
   }
 
-  // Called at startup — runs schema migrations
   async load() {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -31,8 +30,23 @@ export class PgStore {
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         completed_at  TIMESTAMPTZ
       );
+      CREATE TABLE IF NOT EXISTS moves (
+        id            TEXT PRIMARY KEY,
+        match_id      TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        user_id       TEXT NOT NULL,
+        move_number   INTEGER NOT NULL,
+        from_square   TEXT NOT NULL,
+        to_square     TEXT NOT NULL,
+        san           TEXT,
+        promotion     TEXT,
+        kind          TEXT NOT NULL DEFAULT 'standard',
+        mine_triggered JSONB,
+        fen_after     TEXT NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL,
+        UNIQUE (match_id, move_number)
+      );
     `);
-    return this; // mirrors JsonStore's load() return value
+    return this;
   }
 
   async getUserById(userId) {
@@ -101,6 +115,17 @@ export class PgStore {
         ]
       );
 
+      for (let i = 0; i < (record.moves ?? []).length; i++) {
+        const move = record.moves[i];
+        await client.query(
+          `INSERT INTO moves
+             (id, match_id, user_id, move_number, from_square, to_square, san, promotion, kind, mine_triggered, fen_after, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           ON CONFLICT (match_id, move_number) DO NOTHING`,
+          moveInsertParams(record.id, move, i)
+        );
+      }
+
       if (record.winnerId) {
         for (const playerId of record.playerIds) {
           const isWinner = playerId === record.winnerId;
@@ -134,9 +159,43 @@ export class PgStore {
     );
     return {
       user,
-      matches: rows.map(rowToMatch),
+      matches: rows.map(rowToMatch)
     };
   }
+
+  async getMovesForMatch(matchId, userId) {
+    const { rows: matchRows } = await this.pool.query(
+      "SELECT player_ids FROM matches WHERE id = $1",
+      [matchId]
+    );
+
+    if (!matchRows[0] || !matchRows[0].player_ids.includes(userId)) {
+      return null;
+    }
+
+    const { rows } = await this.pool.query(
+      `SELECT * FROM moves WHERE match_id = $1 ORDER BY move_number ASC`,
+      [matchId]
+    );
+    return rows.map(rowToMove);
+  }
+}
+
+function moveInsertParams(matchId, move, index) {
+  return [
+    randomUUID(),
+    matchId,
+    move.userId,
+    index + 1,
+    move.from,
+    move.to,
+    move.san ?? null,
+    move.promotion ?? null,
+    move.kind ?? "standard",
+    move.mineTriggered ? JSON.stringify(move.mineTriggered) : null,
+    move.fen,
+    move.createdAt
+  ];
 }
 
 function rowToUser(row) {
@@ -154,12 +213,29 @@ function rowToMatch(row) {
   return {
     id:           row.id,
     playerIds:    row.player_ids,
-    players:      row.players,        // already parsed by pg driver from JSONB
+    players:      row.players,
     winnerId:     row.winner_id,
     resultReason: row.result_reason,
     moveCount:    row.move_count,
     finalFen:     row.final_fen,
     createdAt:    row.created_at,
     completedAt:  row.completed_at,
+  };
+}
+
+function rowToMove(row) {
+  return {
+    id:           row.id,
+    matchId:      row.match_id,
+    userId:       row.user_id,
+    moveNumber:   row.move_number,
+    from:         row.from_square,
+    to:           row.to_square,
+    san:          row.san,
+    promotion:    row.promotion,
+    kind:         row.kind,
+    mineTriggered: row.mine_triggered,
+    fenAfter:     row.fen_after,
+    createdAt:    row.created_at
   };
 }

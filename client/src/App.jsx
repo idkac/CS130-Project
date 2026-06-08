@@ -247,7 +247,7 @@ function App() {
 
         <aside className="space-y-4">
           <PlayerPanel user={user} match={match} me={me} opponent={opponent} />
-          <HistoryPanel history={history} userId={user?.id} />
+          <HistoryPanel history={history} userId={user?.id} authedFetch={authedFetch} />
         </aside>
       </main>
     </div>
@@ -1114,7 +1114,64 @@ function PlayerRow({ label, player }) {
   );
 }
 
-function HistoryPanel({ history, userId }) {
+function resultLabelForMatch(match, userId) {
+  if (!match.winnerId) {
+    return "Draw";
+  }
+
+  return match.winnerId === userId ? "Win" : "Loss";
+}
+
+function groupMovesIntoTurns(moves) {
+  const turns = [];
+
+  for (let index = 0; index < moves.length; index += 2) {
+    turns.push({
+      number: Math.floor(index / 2) + 1,
+      whiteMove: moves[index],
+      blackMove: moves[index + 1] ?? null
+    });
+  }
+
+  return turns;
+}
+
+function HistoryPanel({ history, userId, authedFetch }) {
+  const [expandedMatchId, setExpandedMatchId] = useState(null);
+  const [movesByMatchId, setMovesByMatchId] = useState({});
+  const [loadingMatchId, setLoadingMatchId] = useState(null);
+  const [selectedMoveIndexByMatchId, setSelectedMoveIndexByMatchId] = useState({});
+
+  async function toggleMatch(matchId) {
+    if (expandedMatchId === matchId) {
+      setExpandedMatchId(null);
+      return;
+    }
+
+    setExpandedMatchId(matchId);
+
+    if (movesByMatchId[matchId] === undefined) {
+      setLoadingMatchId(matchId);
+
+      try {
+        const { moves } = await authedFetch(`/matches/${matchId}/moves`);
+        setMovesByMatchId((prev) => ({ ...prev, [matchId]: moves }));
+        setSelectedMoveIndexByMatchId((prev) => ({
+          ...prev,
+          [matchId]: Math.max(0, moves.length - 1)
+        }));
+      } catch {
+        setMovesByMatchId((prev) => ({ ...prev, [matchId]: [] }));
+      } finally {
+        setLoadingMatchId(null);
+      }
+    }
+  }
+
+  function selectMove(matchId, moveIndex) {
+    setSelectedMoveIndexByMatchId((prev) => ({ ...prev, [matchId]: moveIndex }));
+  }
+
   return (
     <div className="rounded-md border border-black/10 bg-white p-4 shadow-sm">
       <h3 className="mb-3 text-lg font-semibold">History</h3>
@@ -1123,21 +1180,146 @@ function HistoryPanel({ history, userId }) {
       ) : (
         <div className="space-y-2">
           {history.slice(0, 8).map((match) => {
-            const result = match.winnerId ? (match.winnerId === userId ? "Win" : "Loss") : "Draw";
+            const result = resultLabelForMatch(match, userId);
+            const isExpanded = expandedMatchId === match.id;
+            const moves = movesByMatchId[match.id];
+            const isLoading = loadingMatchId === match.id;
+            const selectedMoveIndex = selectedMoveIndexByMatchId[match.id] ?? 0;
+
             return (
-              <div className="rounded-md border border-black/10 bg-[#f7f4ee] px-3 py-2 text-sm" key={match.id}>
-                <div className="font-semibold">
-                  {result} by {match.resultReason}
-                </div>
-                <div className="text-ink/60">
-                  {match.moveCount} moves | {shortId(match.id)}
-                </div>
+              <div className="rounded-md border border-black/10 bg-[#f7f4ee] text-sm" key={match.id}>
+                <button
+                  className="w-full rounded-md px-3 py-2 text-left hover:bg-black/[0.03]"
+                  onClick={() => toggleMatch(match.id)}
+                  type="button"
+                  aria-expanded={isExpanded}
+                >
+                  <div className="font-semibold">{result} by {match.resultReason}</div>
+                  <div className="flex items-center justify-between text-ink/60">
+                    <span>{match.moveCount} moves | {shortId(match.id)}</span>
+                    <span className="text-xs">{isExpanded ? "▲" : "▼"}</span>
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div className="space-y-2 border-t border-black/10 px-3 py-2">
+                    {isLoading ? (
+                      <p className="text-xs text-ink/50">Loading…</p>
+                    ) : moves && moves.length > 0 ? (
+                      <>
+                        <ReplayBoard fen={moves[selectedMoveIndex]?.fenAfter} />
+                        <MoveNav
+                          total={moves.length}
+                          current={selectedMoveIndex}
+                          onChange={(moveIndex) => selectMove(match.id, moveIndex)}
+                        />
+                        <MoveList
+                          moves={moves}
+                          selectedMoveIndex={selectedMoveIndex}
+                          onSelectMove={(moveIndex) => selectMove(match.id, moveIndex)}
+                        />
+                      </>
+                    ) : (
+                      <p className="text-xs text-ink/50">No moves recorded for this match.</p>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
     </div>
+  );
+}
+
+function ReplayBoard({ fen }) {
+  if (!fen) {
+    return null;
+  }
+
+  const pieces = parseFen(fen);
+  const squares = boardSquares("white");
+
+  return (
+    <div className="grid aspect-square w-full grid-cols-8 overflow-hidden rounded border border-black/20">
+      {squares.map((square) => {
+        const fileIndex = square.charCodeAt(0) - "a".charCodeAt(0);
+        const rank = Number(square[1]);
+        const dark = (fileIndex + rank) % 2 === 1;
+        const piece = pieces[square];
+
+        return (
+          <div
+            key={square}
+            className={`flex items-center justify-center ${dark ? "bg-boardDark" : "bg-boardLight"}`}
+          >
+            <span className="text-xl leading-none select-none drop-shadow-sm">
+              {piece ? PIECE_SYMBOLS[piece.pieceType]?.[piece.color] : null}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MoveNav({ total, current, onChange }) {
+  return (
+    <div className="flex items-center justify-between gap-2 text-xs">
+      <button
+        className="rounded border border-black/15 bg-white px-2 py-0.5 disabled:opacity-30"
+        disabled={current === 0}
+        onClick={() => onChange(current - 1)}
+      >
+        ← Prev
+      </button>
+      <span className="text-ink/50">Move {current + 1} / {total}</span>
+      <button
+        className="rounded border border-black/15 bg-white px-2 py-0.5 disabled:opacity-30"
+        disabled={current === total - 1}
+        onClick={() => onChange(current + 1)}
+      >
+        Next →
+      </button>
+    </div>
+  );
+}
+
+function MoveList({ moves, selectedMoveIndex, onSelectMove }) {
+  const turns = groupMovesIntoTurns(moves);
+
+  return (
+    <ol className="max-h-32 overflow-auto space-y-0.5 font-mono text-xs">
+      {turns.map(({ number, whiteMove, blackMove }) => (
+        <li key={number} className="flex gap-1">
+          <span className="w-6 shrink-0 text-right text-ink/40">{number}.</span>
+          <button
+            className={`flex-1 truncate rounded px-0.5 text-left ${
+              selectedMoveIndex === whiteMove.moveNumber - 1
+                ? "bg-accent/20 font-semibold text-accent"
+                : "hover:bg-black/5"
+            }`}
+            onClick={() => onSelectMove(whiteMove.moveNumber - 1)}
+            type="button"
+          >
+            {whiteMove.san}
+          </button>
+          {blackMove ? (
+            <button
+              className={`flex-1 truncate rounded px-0.5 text-left ${
+                selectedMoveIndex === blackMove.moveNumber - 1
+                  ? "bg-accent/20 font-semibold text-accent"
+                  : "hover:bg-black/5"
+              }`}
+              onClick={() => onSelectMove(blackMove.moveNumber - 1)}
+              type="button"
+            >
+              {blackMove.san}
+            </button>
+          ) : null}
+        </li>
+      ))}
+    </ol>
   );
 }
 

@@ -7,18 +7,19 @@ Clickmate is a CS130 prototype for the design doc idea "Cookie Clicker + Chess."
 Implemented in this prototype:
 
 - Account registration/login with local session tokens.
-- File-backed local user records and completed match history.
+- Persistence: JSON file store for zero-config dev; PostgreSQL (`DATABASE_URL`) for production.
 - Two-player matchmaking through a shared local queue.
 - Timed clicking phase with server-side click-rate validation.
 - Shop phase for buying chess pieces, clock powerups, and strategic piece/placement powerups.
 - Placement phase with server-side board-zone, inventory, expanded-rank, and mine validation.
 - Chess phase with `chess.js` plus server-side powerup-aware move validation.
 - Match completion through checkmate, draw, stalemate, or resignation.
-- React UI for lobby, clicking, shop, placement, chess, and history.
+- Per-move history persisted at match completion (FEN, SAN, from/to, kind, mine triggers).
+- React UI for lobby, clicking, shop, placement, chess, history, and move-by-move replay.
 
 Deferred from the full design doc:
 
-- Redis/PostgreSQL infrastructure.
+- Redis for active match state (currently in-process memory).
 - Production authentication and persistent sessions.
 - Ranked matchmaking, MMR, AI opponents, and production-only powerup balancing.
 - Large-scale multiplayer deployment.
@@ -27,8 +28,8 @@ Deferred from the full design doc:
 
 - Frontend: React, Vite, Tailwind CSS, Socket.IO client.
 - Backend: Node.js, Express, Socket.IO, chess.js.
-- Persistence: local JSON file for development (`server/data/db.json`).
-- Tests: Node's built-in test runner for backend game rules.
+- Persistence: JSON file (`server/data/db.json`) by default; set `DATABASE_URL` to use PostgreSQL.
+- Tests: Node's built-in test runner for backend game rules and store layer.
 
 ## Prerequisites
 
@@ -127,6 +128,17 @@ server/
     gameEngine.test.js
 ```
 
+Socket.IO broadcasts `match:update` events to clients in the active match room.
+
+## Development Notes
+
+- `server/data/db.json` is generated at runtime and intentionally ignored by git.
+- Active matches are in memory, so restarting the backend clears live matches.
+- Completed match history, win/loss records, and per-move history persist across restarts.
+- Both `JsonStore` and `PgStore` expose the same interface; the server picks based on `DATABASE_URL`.
+- Server-side validation should remain the authority for any new economy, placement, or chess feature.
+- Move history is persisted atomically with the match record at game completion — no partial writes.
+
 ## API Surface
 
 The MVP includes the design-doc API shape with `/api` prefixed routes:
@@ -146,14 +158,5 @@ The MVP includes the design-doc API shape with `/api` prefixed routes:
 - `POST /api/matches/:matchId/use-powerup`
 - `POST /api/matches/:matchId/resign`
 - `GET /api/matches/:matchId`
+- `GET /api/matches/:matchId/moves`
 - `GET /api/users/:userId/history`
-
-Socket.IO broadcasts `match:update` events to clients in the active match room.
-
-## Development Notes
-
-- `server/data/db.json` is generated at runtime and intentionally ignored by git.
-- Active matches are in memory, so restarting the backend clears live matches.
-- Completed match history and user win/loss records persist locally.
-- Server-side validation should remain the authority for any new economy, placement, or chess feature.
-- If Redis/PostgreSQL are added later, keep `GameManager` focused on match rules and move persistence behind a store/service boundary.
