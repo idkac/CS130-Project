@@ -41,7 +41,7 @@ test("shop purchases affect inventory and placement starts with default pieces",
   match.players[0].pawnCount = 200;
 
   manager.purchase(match.id, alice.id, { itemType: "piece", itemId: "queen" });
-  assert.equal(match.players[0].pawnCount, 50);
+  assert.equal(match.players[0].pawnCount, 150);
   assert.equal(match.players[0].inventory.queen, 1);
 
   manager.ready(match.id, alice.id);
@@ -50,6 +50,25 @@ test("shop purchases affect inventory and placement starts with default pieces",
   assert.equal(match.phase, PHASES.PLACEMENT);
   assert.equal(match.players[0].placedPieces.some((piece) => piece.square === "e1"), true);
   assert.equal(match.players[1].placedPieces.some((piece) => piece.square === "e8"), true);
+});
+
+test("piece costs scale as additional copies are purchased", () => {
+  const manager = new GameManager();
+  const match = manager.joinMatchmaking(alice);
+  manager.joinMatchmaking(bob);
+  advanceToShop(manager, match);
+
+  match.players[0].pawnCount = 100;
+
+  manager.purchase(match.id, alice.id, { itemType: "piece", itemId: "knight" });
+  assert.equal(match.players[0].pawnCount, 90);
+
+  const serialized = manager.serialize(match, alice.id);
+  const knight = serialized.shop.pieces.find((item) => item.id === "knight");
+  assert.equal(knight.cost, 20);
+
+  manager.purchase(match.id, alice.id, { itemType: "piece", itemId: "knight" });
+  assert.equal(match.players[0].pawnCount, 70);
 });
 
 test("placement validates zones and builds a custom FEN", () => {
@@ -118,22 +137,25 @@ test("squareBlockade acts as a one-shot mine during placement", () => {
 
 function advanceToPlacement(manager, matchRef) {
   matchRef.phaseEndsAt = new Date(Date.now() - 1).toISOString();
-  manager.advanceExpiredMatches(); // triggers → shop
+  manager.advanceExpiredMatches();
 
   matchRef.players[0].pawnCount = 200;
   matchRef.players[1].pawnCount = 200;
 
   manager.ready(matchRef.id, alice.id);
-  manager.ready(matchRef.id, bob.id); // → placement
+  manager.ready(matchRef.id, bob.id);
 }
 
-// Helper: advance through clicking and shop phases, reaching chess with both kings placed.
+function advanceToShop(manager, matchRef) {
+  matchRef.phaseEndsAt = new Date(Date.now() - 1).toISOString();
+  manager.advanceExpiredMatches();
+}
+
 function advanceToChess(manager, matchRef) {
   advanceToPlacement(manager, matchRef);
 
-  // Both players already have default pieces (king included), so ready up.
   manager.ready(matchRef.id, alice.id);
-  manager.ready(matchRef.id, bob.id); // → chess
+  manager.ready(matchRef.id, bob.id);
 }
 
 test("timeSiphon drains opponent clock and credits user", () => {

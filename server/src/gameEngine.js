@@ -169,6 +169,25 @@ function countPurchasedPieces(player, pieceType) {
   return (player.inventory[pieceType] ?? 0) - (INITIAL_INVENTORY[pieceType] ?? 0);
 }
 
+function pieceCostForPlayer(item, player) {
+  const alreadyOwned = countPurchasedPieces(player, item.id);
+  const cost = item.costScale ? item.cost * item.costScale ** alreadyOwned : item.cost;
+
+  return {
+    alreadyOwned,
+    cost
+  };
+}
+
+function serializeShopPiece(item, viewer) {
+  if (!viewer || !item.costScale) {
+    return item;
+  }
+
+  const { cost } = pieceCostForPlayer(item, viewer);
+  return cost === item.cost ? item : { ...item, cost };
+}
+
 function countPowerup(player, powerupId) {
   return player.powerups.filter((candidate) => candidate === powerupId).length;
 }
@@ -748,10 +767,11 @@ export class GameManager {
     if (itemType === "piece") {
       const item = PIECE_SHOP[itemId];
       assertOrThrow(item, 400, "Unknown piece.");
-      assertOrThrow(countPurchasedPieces(player, itemId) < item.maxQuantity, 400, "Maximum quantity already purchased for this piece.");
-      assertOrThrow(player.pawnCount >= item.cost, 400, "Not enough pawns.");
+      const { alreadyOwned, cost } = pieceCostForPlayer(item, player);
+      assertOrThrow(alreadyOwned < item.maxQuantity, 400, "Maximum quantity already purchased for this piece.");
+      assertOrThrow(player.pawnCount >= cost, 400, "Not enough pawns.");
 
-      player.pawnCount -= item.cost;
+      player.pawnCount -= cost;
       player.inventory[itemId] = (player.inventory[itemId] ?? 0) + 1;
       this.notify(match);
       return match;
@@ -1294,7 +1314,7 @@ export class GameManager {
       resultReason: match.resultReason,
       completedAt: match.completedAt,
       shop: {
-        pieces: Object.values(PIECE_SHOP),
+        pieces: Object.values(PIECE_SHOP).map((item) => serializeShopPiece(item, viewer)),
         powerups: Object.values(POWERUP_SHOP)
       }
     };

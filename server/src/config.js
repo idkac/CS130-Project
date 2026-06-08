@@ -29,31 +29,34 @@ export const PIECE_SHOP = {
   pawn: {
     id: "pawn",
     label: "Pawn",
-    cost: 5,
+    cost: 3,
     maxQuantity: 8
   },
   knight: {
     id: "knight",
     label: "Knight",
-    cost: 25,
+    cost: 10,
+    costScale: 2,
     maxQuantity: 4
   },
   bishop: {
     id: "bishop",
     label: "Bishop",
-    cost: 25,
+    cost: 10,
+    costScale: 2,
     maxQuantity: 4
   },
   rook: {
     id: "rook",
     label: "Rook",
-    cost: 50,
+    cost: 20,
+    costScale: 2,
     maxQuantity: 4
   },
   queen: {
     id: "queen",
     label: "Queen",
-    cost: 150,
+    cost: 50,
     maxQuantity: 1
   }
 };
